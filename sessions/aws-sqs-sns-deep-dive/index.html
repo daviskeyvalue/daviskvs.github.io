@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>AWS SQS & SNS Deep Dive · AWS Upskill</title>
-  <meta name="description" content="A practical tour of Amazon SQS and SNS: decoupling, fan-out, DLQs, FIFO ordering, security, and a Terraform reference." />
+  <meta name="description" content="A practical tour of Amazon SQS and SNS: decoupling, fan-out, DLQs, FIFO ordering, security, and a production reference architecture." />
   <meta name="color-scheme" content="light dark" />
   <link rel="stylesheet" href="../../assets/css/shared.css" />
   <link rel="stylesheet" href="./styles.css" />
@@ -44,10 +44,9 @@
         <span class="tag">SQS</span>
         <span class="tag">SNS</span>
         <span class="tag">Messaging</span>
-        <span class="tag">Terraform</span>
-        &nbsp;·&nbsp; Intermediate &nbsp;·&nbsp; ~35 min &nbsp;·&nbsp; Updated 2026-06-21
+        &nbsp;·&nbsp; Intermediate &nbsp;·&nbsp; ~30 min &nbsp;·&nbsp; Updated 2026-06-21
       </div>
-      <p>New to message queues? Start here. This is a plain-English guide to two AWS services that let the different parts of an app talk to each other <em>without waiting on one another</em>: <strong>Amazon SQS</strong> (a queue that holds work until someone is ready for it) and <strong>Amazon SNS</strong> (a broadcaster that sends one message to many listeners at once). We begin with a simple analogy, then build up to real patterns, reliability, security, and a Terraform recipe you can copy.</p>
+      <p>New to message queues? Start here. This is a plain-English guide to two AWS services that let the different parts of an app talk to each other <em>without waiting on one another</em>: <strong>Amazon SQS</strong> (a queue that holds work until someone is ready for it) and <strong>Amazon SNS</strong> (a broadcaster that sends one message to many listeners at once). We begin with a simple analogy, then build up to real patterns, reliability, security, and a production reference architecture.</p>
     </div>
 
     <div class="container">
@@ -68,10 +67,11 @@
             <li><a href="#sqs-vs-sns">SQS vs SNS</a></li>
             <li><a href="#fan-out">Fan-out Pattern</a></li>
             <li><a href="#message-lifecycle">Message Lifecycle &amp; DLQ</a></li>
+            <li><a href="#long-polling">Long vs Short Polling</a></li>
+            <li><a href="#sqs-scaling">SQS &amp; Auto Scaling</a></li>
             <li><a href="#security">Security</a></li>
             <li><a href="#monitoring">Monitoring</a></li>
             <li><a href="#reference-architecture">Reference Architecture</a></li>
-            <li><a href="#terraform">Terraform Example</a></li>
             <li><a href="#mental-model">Mental Model</a></li>
             <li><a href="#common-mistakes">Common Mistakes</a></li>
             <li><a href="#references">References</a></li>
@@ -192,7 +192,33 @@
                 </div>
                 <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
               </summary>
-              <p>Amazon SQS is a <strong>pull-based</strong>, fully managed message queue. Producers send messages to a queue URL; consumers poll the queue using <code>ReceiveMessage</code>, process the message, and delete it. AWS manages replication, scaling, and durability behind the scenes.</p>
+              <p>Amazon SQS is a <strong>pull-based</strong>, fully managed message queue — and the <strong>oldest service on AWS</strong> (over a decade old, so its behaviour is rock-solid and well understood). Producers send messages to a queue URL with the <code>SendMessage</code> API; consumers poll the queue using <code>ReceiveMessage</code>, process the message, and delete it. AWS manages replication, scaling, and durability behind the scenes.</p>
+              <div class="callout">
+                <p class="callout__title">Exam cue: "decoupling" → think SQS</p>
+                <p>SQS exists to <strong>decouple applications</strong>. Any time you see "application decoupling," a sudden load spike, timeouts, or "make sure no requests are lost," SQS is almost always the answer.</p>
+              </div>
+
+              <h3>What makes SQS special</h3>
+              <div class="grid-2">
+                <div class="card">
+                  <h4 style="margin-top:0;">♾️ Unlimited throughput &amp; messages</h4>
+                  <p>Standard queues have <strong>no limit</strong> on the number of messages per second you can send, and <strong>no limit</strong> on how many messages the queue can hold. It scales automatically with your load.</p>
+                </div>
+                <div class="card">
+                  <h4 style="margin-top:0;">⚡ Low latency</h4>
+                  <p>Both publishing and receiving are fast — typically <strong>under 10 milliseconds</strong>. SQS is built for high-volume, high-velocity workloads.</p>
+                </div>
+                <div class="card">
+                  <h4 style="margin-top:0;">⏳ Short-lived messages</h4>
+                  <p>A message lives in the queue for <strong>4 days by default</strong>, up to a maximum of <strong>14 days</strong>. It must be received and deleted within that window or it is lost.</p>
+                </div>
+                <div class="card">
+                  <h4 style="margin-top:0;">🔁 At-least-once delivery</h4>
+                  <p>Standard queues guarantee delivery but a message may occasionally arrive <strong>twice</strong>, and ordering is <strong>best-effort</strong>. Design consumers to be idempotent. (FIFO queues fix both — see Section 3.)</p>
+                </div>
+              </div>
+
+              <p>Before going deeper, it helps to know the handful of settings that define how a queue behaves. Each one is a knob you tune per queue; the table below lists them, and the breakdown that follows explains what each really means and how to choose a value.</p>
 
               <figure class="figure">
                 <svg viewBox="0 0 700 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SQS architecture diagram" style="max-width:700px;margin:0 auto;">
@@ -240,6 +266,69 @@
                   </tbody>
                 </table>
               </div>
+
+              <h3>Each attribute in detail</h3>
+              <div class="accordion">
+                <details open>
+                  <summary>Message size — up to 256 KB</summary>
+                  <div class="accordion__body">
+                    <p>A single SQS message (body plus all attributes) can be at most <strong>256 KB</strong>. SQS is built for small instructions — "process order 1234", "resize this image" — not for shipping the data itself. If your payload is larger, store the object in S3 and put only the S3 key in the message; the <strong>SQS Extended Client</strong> library does this for you automatically and transparently handles payloads up to 2 GB. Keeping messages small also keeps cost down, because SQS bills in 64 KB chunks: a 200 KB message counts as four requests, not one.</p>
+                  </div>
+                </details>
+                <details>
+                  <summary>Retention period — 1 minute to 14 days (default 4 days)</summary>
+                  <div class="accordion__body">
+                    <p>How long a message survives in the queue if nobody successfully processes and deletes it. Once the timer expires, SQS drops the message automatically. The default of 4 days gives you a comfortable window to recover from an outage — if your consumers are down over a long weekend, the work is still waiting when they come back. Set it longer (up to 14 days) for low-volume queues where losing a message is costly; set it shorter for high-volume, time-sensitive data that is worthless if it isn't handled within minutes.</p>
+                  </div>
+                </details>
+                <details>
+                  <summary>Visibility timeout — 0 s to 12 hours (default 30 s)</summary>
+                  <div class="accordion__body">
+                    <p>When a consumer receives a message, SQS doesn't delete it — it <em>hides</em> it from other consumers for the duration of the visibility timeout. This stops two workers from processing the same message at once. The consumer must finish its work and call <code>DeleteMessage</code> before the timer runs out; if it crashes or is too slow, the message reappears and another consumer picks it up. <strong>Rule of thumb:</strong> set the visibility timeout slightly higher than your worst-case processing time (e.g. ≥ your Lambda or container task timeout). Too short and you get duplicate processing; too long and a genuinely failed message takes ages to retry.</p>
+                  </div>
+                </details>
+                <details>
+                  <summary>In-flight messages — 120,000 (Standard) / 20,000 (FIFO)</summary>
+                  <div class="accordion__body">
+                    <p>An "in-flight" message is one that has been received by a consumer but not yet deleted or returned to the queue (i.e. it is inside its visibility timeout). This is a hard quota on concurrency. If you hit the limit, <code>ReceiveMessage</code> returns an error and you must drain the backlog before receiving more. In practice you only approach this ceiling if consumers are far too slow or the visibility timeout is set far too high, so it doubles as a useful signal that something is wrong with throughput.</p>
+                  </div>
+                </details>
+                <details>
+                  <summary>Delivery guarantee — at-least-once (Standard) / exactly-once (FIFO)</summary>
+                  <div class="accordion__body">
+                    <p>Standard queues guarantee <strong>at-least-once</strong> delivery: every message arrives, but occasionally a message may be delivered more than once (a side effect of the distributed, highly available design). Your consumers must therefore be <strong>idempotent</strong> — safe to run twice for the same message, for example by recording a processed message ID and skipping repeats. FIFO queues guarantee <strong>exactly-once</strong> processing within a deduplication window and preserve strict ordering, at the cost of lower throughput. Pick Standard unless you genuinely need ordering or de-duplication.</p>
+                  </div>
+                </details>
+                <details>
+                  <summary>Long polling wait — up to 20 s</summary>
+                  <div class="accordion__body">
+                    <p>With <strong>short polling</strong> (wait = 0), SQS replies immediately even when the queue is empty, so a busy poll loop fires constant empty receives — each one a billable request. <strong>Long polling</strong> tells SQS to hold the connection open for up to 20 seconds and return as soon as any message arrives. This slashes empty responses, lowers cost, and reduces latency. Almost always set <code>ReceiveMessageWaitTimeSeconds</code> to 20; there is rarely a good reason not to.</p>
+                  </div>
+                </details>
+              </div>
+
+              <h3 id="consumers">Consumers — who reads the queue, and how</h3>
+              <p>A queue is only half the story. A <strong>consumer</strong> is any process that <em>reads</em> messages from the queue, does the work they describe, and then deletes them. Producers don't know or care who the consumers are; they simply drop messages in. This is what makes the two sides independent — you can change, scale, or restart consumers without touching the producers at all.</p>
+              <p>What can be a consumer? Anything that can call the SQS API: an <strong>AWS Lambda function</strong> (the most common choice — Lambda polls the queue for you via an event source mapping), a container or process running on <strong>ECS / EKS / EC2</strong>, or even a script on a server. AWS does not push messages to consumers; consumers <strong>pull</strong> them.</p>
+
+              <h4>The receive → process → delete cycle</h4>
+              <p>Every consumer follows the same three-step loop, and understanding it is the key to using SQS correctly:</p>
+              <ol>
+                <li><strong>Receive</strong> — the consumer calls <code>ReceiveMessage</code> and gets one or more messages (up to 10 at a time). At this moment SQS starts the <em>visibility timeout</em> and hides those messages from everyone else.</li>
+                <li><strong>Process</strong> — the consumer does the actual work: charge a card, send an email, resize an image. The message is still in the queue, just invisible.</li>
+                <li><strong>Delete</strong> — <em>only after</em> the work succeeds, the consumer calls <code>DeleteMessage</code>. This is the step beginners forget. If you never delete, the message reappears after the visibility timeout and gets processed again forever.</li>
+              </ol>
+              <div class="callout callout--warn">
+                <p class="callout__title">Delete means "done," not "received"</p>
+                <p>SQS deliberately does not auto-delete on receive. If a consumer crashes mid-work, the message simply becomes visible again and another consumer retries it — nothing is lost. The flip side: <strong>delete only after success</strong>, never before, or you'll throw away work that failed.</p>
+              </div>
+
+              <h4>Competing consumers — scaling out</h4>
+              <p>You can run <strong>many identical consumers against the same queue</strong>. SQS hands each message to whichever consumer asks for it next, so the queue automatically spreads load across all of them — this is the <strong>competing consumers</strong> pattern. Need to clear a backlog faster? Add more consumers. Traffic quiet? Scale them down to zero. Because each message goes to exactly one consumer, the work is divided, not duplicated, and you get horizontal scaling for free.</p>
+              <p>A natural pairing is <strong>auto-scaling on queue depth</strong>: watch the <code>ApproximateNumberOfMessagesVisible</code> metric and add consumers when the backlog grows, remove them when it drains. (Section 9 covers exactly which metrics to alarm on.)</p>
+
+              <h4>What happens when a consumer keeps failing?</h4>
+              <p>If a message can't be processed — bad data, a downstream bug — the consumer won't delete it, so it returns to the queue and is retried. To stop a "poison" message from looping forever, attach a <strong>Dead Letter Queue (DLQ)</strong>: after a set number of failed attempts (<code>maxReceiveCount</code>), SQS moves the message to the DLQ so the rest of the queue keeps flowing and you can inspect the failure later. Section 7 covers the lifecycle and DLQs in depth.</p>
             </details>
           </section>
 
@@ -279,13 +368,18 @@
                   <ul>
                     <li><strong>Throughput:</strong> Up to 3,000 msg/s with batching; 300 msg/s without. High-throughput FIFO mode: up to 70,000 msg/s.</li>
                     <li><strong>Ordering:</strong> Strict FIFO within each <code>MessageGroupId</code>. Different groups process in parallel.</li>
-                    <li><strong>Delivery:</strong> Exactly-once within the 5-minute deduplication window. Duplicate messages (same <code>MessageDeduplicationId</code>) are rejected.</li>
+                    <li><strong>Delivery (exactly-once send):</strong> Duplicates are removed <em>at the queue level</em> within a <strong>5-minute</strong> deduplication window.</li>
                     <li><strong>Name suffix:</strong> Queue name <em>must</em> end in <code>.fifo</code>.</li>
                     <li><strong>Use case:</strong> Payment processing, order workflows, event sourcing where replay order is critical.</li>
                   </ul>
                   <div class="callout callout--ok">
                     <p class="callout__title">Message Group ID = unit of ordering</p>
                     <p>Messages with the same <code>MessageGroupId</code> are processed one at a time, in order. Use a user ID, order ID, or any natural partition key. Different groups run in parallel — no head-of-line blocking across groups.</p>
+                  </div>
+                  <div class="callout">
+                    <p class="callout__title">Two ways to deduplicate</p>
+                    <p><strong>1. Deduplication ID:</strong> you attach a <code>MessageDeduplicationId</code> to each message. If SQS sees the same ID twice within 5 minutes, the duplicate is discarded.<br>
+                    <strong>2. Content-based deduplication:</strong> enable this setting and SQS computes a SHA-256 hash of the message body for you — no need to supply an ID. Identical bodies sent within 5 minutes are deduplicated automatically.</p>
                   </div>
                 </div>
                 <div class="tabs__panel" data-panel="compare" role="tabpanel" hidden>
@@ -374,6 +468,21 @@
               <div class="callout">
                 <p class="callout__title">Message Filtering</p>
                 <p>Subscribers can attach a <strong>filter policy</strong> (JSON) that tells SNS to deliver only messages whose attributes match the policy. This lets a single topic serve multiple consumer types without each consumer receiving every message. Example: an "order-events" topic filters to send <code>status=SHIPPED</code> events only to the logistics queue.</p>
+              </div>
+
+              <h3>How publishers send to SNS</h3>
+              <p>There are two publishing styles:</p>
+              <ul>
+                <li><strong>Topic publish (most common):</strong> using the SDK you <code>CreateTopic</code>, register subscribers with <code>Subscribe</code>, then <code>Publish</code> a message to the topic ARN. SNS fans it out to every subscriber.</li>
+                <li><strong>Direct publish (mobile push):</strong> used to push to mobile app endpoints. You register the device against a platform application, then publish directly to the endpoint. SNS talks to the platform push service — <strong>FCM/GCM</strong> (Android), <strong>APNS</strong> (Apple), and <strong>ADM</strong> (Amazon).</li>
+              </ul>
+
+              <h3>SNS receives from many AWS services</h3>
+              <p>Many AWS services publish to SNS out of the box, which makes it a natural notification hub: <strong>CloudWatch alarms</strong>, <strong>Auto Scaling</strong> lifecycle events, <strong>Amazon S3</strong> bucket events, <strong>RDS</strong> events, <strong>AWS Budgets</strong>, <strong>Lambda</strong>, <strong>DynamoDB</strong>, and <strong>CloudFormation</strong> — among others.</p>
+
+              <div class="callout">
+                <p class="callout__title">Scale &amp; limits</p>
+                <p>A single topic supports up to <strong>12,500,000 subscriptions</strong>, and you can create up to <strong>100,000 topics</strong> per account — more than enough to fan one event out to a very large audience.</p>
               </div>
             </details>
           </section>
@@ -470,6 +579,34 @@
                 <li><strong>DLQ:</strong> After N failed attempts, the message moves to a dead-letter queue for inspection — no silent loss.</li>
                 <li><strong>Rate control:</strong> Consumers can pull at their own rate, preventing Lambda concurrency spikes or DB overload.</li>
               </ul>
+
+              <h3>More fan-out patterns</h3>
+              <div class="grid-2">
+                <div class="card">
+                  <h4 style="margin-top:0;">📨 SNS → multiple SQS queues</h4>
+                  <p>The core pattern: one publish, many queues, each fully decoupled. Every receiving queue needs an <strong>access policy</strong> that allows the SNS topic to <code>SendMessage</code>.</p>
+                </div>
+                <div class="card">
+                  <h4 style="margin-top:0;">🌍 Cross-region delivery</h4>
+                  <p>An SNS topic can deliver to <strong>SQS queues in other regions</strong>, making fan-out a simple building block for cross-region replication and disaster recovery.</p>
+                </div>
+                <div class="card">
+                  <h4 style="margin-top:0;">🗂️ S3 events → SNS → many queues</h4>
+                  <p>S3 can send a given event type to only <strong>one destination</strong>. To fan a single S3 event out to several consumers, point S3 at an SNS topic and let SNS deliver to many queues.</p>
+                </div>
+                <div class="card">
+                  <h4 style="margin-top:0;">🔥 SNS → Kinesis Data Firehose → S3</h4>
+                  <p>Subscribe a <strong>Kinesis Data Firehose</strong> stream to the topic to land every message in <strong>S3</strong> (or Redshift / OpenSearch) for archival and analytics.</p>
+                </div>
+                <div class="card">
+                  <h4 style="margin-top:0;">🔢 FIFO fan-out (ordering preserved)</h4>
+                  <p>An <strong>SNS FIFO</strong> topic fanning out to <strong>SQS FIFO</strong> queues keeps strict ordering and deduplication end to end — use it when every consumer must see events in the exact published order.</p>
+                </div>
+                <div class="card">
+                  <h4 style="margin-top:0;">🔎 Message filtering</h4>
+                  <p>Attach a JSON <strong>filter policy</strong> so each queue receives only the events it cares about. Example: on an <code>orders</code> topic, the analytics queue subscribes with <code>{"event_type":["order_placed","order_cancelled"]}</code> while the shipping queue takes only <code>{"event_type":["order_placed"]}</code>.</p>
+                </div>
+              </div>
             </details>
           </section>
 
@@ -518,6 +655,18 @@
                 <figcaption>Message lifecycle: received → processed (deleted) or timed out (retried) or exhausted (DLQ).</figcaption>
               </figure>
 
+              <h3>Visibility timeout in depth</h3>
+              <p>When a consumer receives a message, SQS hides it from other consumers for the <strong>visibility timeout</strong> — <strong>30 seconds by default</strong>, configurable from <strong>0 seconds up to 12 hours</strong>. If the consumer deletes the message before the timeout expires, it is gone for good. If not (a crash, or a slow run), the message becomes visible again so another consumer can retry it.</p>
+              <ul>
+                <li><strong>Set too low</strong> → the message reappears while the first consumer is still working on it, so it gets <strong>processed twice</strong>.</li>
+                <li><strong>Set too high</strong> → if a consumer dies, the message stays hidden for a long time before anyone can retry it, adding latency.</li>
+                <li><strong>Rule of thumb:</strong> set it a little longer than your worst-case processing time.</li>
+              </ul>
+              <div class="callout">
+                <p class="callout__title">Need more time? Call ChangeMessageVisibility</p>
+                <p>A consumer that needs longer than expected can call the <code>ChangeMessageVisibility</code> API to extend the timeout for that specific in-flight message — buying more time without letting the message become visible to others.</p>
+              </div>
+
               <h3>Dead Letter Queues (DLQ)</h3>
               <p>A DLQ is a separate SQS queue that receives messages that fail to be processed after <code>maxReceiveCount</code> attempts. It is your safety net for poison-pill messages — messages that consistently cause consumer errors.</p>
               <ul>
@@ -534,11 +683,114 @@
           </section>
 
           <!-- Section 8 -->
+          <section class="section" id="long-polling">
+            <details class="section__collapse" open>
+              <summary>
+                <div class="section__heading">
+                  <span class="section__eyebrow">Section 8 · Efficiency</span>
+                  <h2>Long polling vs short polling</h2>
+                </div>
+                <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+              </summary>
+              <p>When a consumer calls <code>ReceiveMessage</code>, SQS has to decide how hard to look for a message before answering. That choice — <strong>short polling</strong> vs <strong>long polling</strong> — has a big impact on cost and latency.</p>
+
+              <div class="grid-2">
+                <div class="card">
+                  <h3 style="margin-top:0;">Short polling (default)</h3>
+                  <p>SQS samples only a <strong>subset</strong> of its servers and replies <em>immediately</em> — even if that means returning an empty response when messages actually exist elsewhere.</p>
+                  <ul>
+                    <li>Replies instantly, empty or not</li>
+                    <li>More empty receives → more API calls → higher cost</li>
+                    <li><code>WaitTimeSeconds = 0</code></li>
+                  </ul>
+                </div>
+                <div class="card">
+                  <h3 style="margin-top:0;">Long polling (recommended)</h3>
+                  <p>SQS <strong>waits</strong> up to <code>WaitTimeSeconds</code> for a message to arrive before replying, and queries <strong>all</strong> servers — so it never misses a waiting message.</p>
+                  <ul>
+                    <li>Eliminates empty responses → fewer API calls, lower cost</li>
+                    <li>Lower latency: the message is returned the moment it arrives</li>
+                    <li><code>WaitTimeSeconds</code> between <strong>1 and 20 seconds</strong></li>
+                  </ul>
+                </div>
+              </div>
+
+              <div class="callout callout--ok">
+                <p class="callout__title">How to enable it</p>
+                <p>Turn on long polling at the <strong>queue level</strong> with the <code>ReceiveMessageWaitTimeSeconds</code> attribute (applies to every receive), or per request at the <strong>API level</strong> by passing <code>WaitTimeSeconds</code> on <code>ReceiveMessage</code> (this overrides the queue setting). AWS recommends <strong>20 seconds</strong> for almost all workloads.</p>
+              </div>
+            </details>
+          </section>
+
+          <!-- Section 9 -->
+          <section class="section" id="sqs-scaling">
+            <details class="section__collapse" open>
+              <summary>
+                <div class="section__heading">
+                  <span class="section__eyebrow">Section 9 · Scaling</span>
+                  <h2>SQS &amp; Auto Scaling</h2>
+                </div>
+                <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+              </summary>
+              <p>Because a queue absorbs bursts, you can size your consumer fleet to the <em>work waiting in the queue</em> rather than to the raw incoming request rate. This is one of the most common SQS patterns on AWS.</p>
+
+              <figure class="figure">
+                <svg viewBox="0 0 720 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SQS-driven auto scaling" style="max-width:720px;margin:0 auto;">
+                  <defs>
+                    <marker id="arrS1" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="var(--color-primary)"/></marker>
+                    <marker id="arrS2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="var(--color-success)"/></marker>
+                  </defs>
+                  <rect x="10" y="120" width="120" height="60" rx="8" fill="var(--color-surface-2)" stroke="var(--color-border)" stroke-width="1.5"/>
+                  <text x="70" y="146" text-anchor="middle" font-size="11" fill="var(--color-text)" font-weight="700">Producers</text>
+                  <text x="70" y="162" text-anchor="middle" font-size="9" fill="var(--color-text-muted)">variable load</text>
+                  <line x1="130" y1="150" x2="200" y2="150" stroke="var(--color-primary)" stroke-width="2" marker-end="url(#arrS1)" class="svg-flow"/>
+                  <rect x="205" y="120" width="130" height="60" rx="10" fill="color-mix(in srgb,var(--color-primary) 12%,var(--color-surface))" stroke="var(--color-primary)" stroke-width="2"/>
+                  <text x="270" y="146" text-anchor="middle" font-size="12" fill="var(--color-primary)" font-weight="700">SQS Queue</text>
+                  <text x="270" y="162" text-anchor="middle" font-size="9" fill="var(--color-text-muted)">backlog buffers spikes</text>
+                  <line x1="270" y1="120" x2="270" y2="72" stroke="var(--color-text-muted)" stroke-width="1.2" stroke-dasharray="4 3"/>
+                  <rect x="175" y="30" width="190" height="42" rx="8" fill="color-mix(in srgb,var(--color-warning) 12%,var(--color-surface))" stroke="var(--color-warning)" stroke-width="1.5"/>
+                  <text x="270" y="48" text-anchor="middle" font-size="10" fill="var(--color-text)" font-weight="600">CloudWatch alarm</text>
+                  <text x="270" y="62" text-anchor="middle" font-size="8" fill="var(--color-text-muted)">ApproximateNumberOfMessagesVisible</text>
+                  <line x1="365" y1="51" x2="470" y2="51" stroke="var(--color-warning)" stroke-width="1.5" marker-end="url(#arrS1)"/>
+                  <text x="417" y="44" text-anchor="middle" font-size="9" fill="var(--color-warning)">scale out / in</text>
+                  <line x1="335" y1="150" x2="470" y2="150" stroke="var(--color-success)" stroke-width="2" marker-end="url(#arrS2)"/>
+                  <text x="402" y="142" text-anchor="middle" font-size="9" fill="var(--color-text-muted)">poll</text>
+                  <rect x="475" y="20" width="232" height="262" rx="10" fill="none" stroke="var(--color-success)" stroke-width="1.5" stroke-dasharray="6 4"/>
+                  <text x="591" y="38" text-anchor="middle" font-size="10" fill="var(--color-success)" font-weight="700">Auto Scaling Group (consumers)</text>
+                  <rect x="500" y="55" width="182" height="34" rx="6" fill="var(--color-surface-2)" stroke="var(--color-border)" stroke-width="1.2"/>
+                  <text x="591" y="77" text-anchor="middle" font-size="10" fill="var(--color-text)">EC2 / ECS / Lambda</text>
+                  <rect x="500" y="100" width="182" height="34" rx="6" fill="var(--color-surface-2)" stroke="var(--color-border)" stroke-width="1.2"/>
+                  <text x="591" y="122" text-anchor="middle" font-size="10" fill="var(--color-text)">worker</text>
+                  <rect x="500" y="145" width="182" height="34" rx="6" fill="var(--color-surface-2)" stroke="var(--color-border)" stroke-width="1.2"/>
+                  <text x="591" y="167" text-anchor="middle" font-size="10" fill="var(--color-text)">worker</text>
+                  <rect x="500" y="190" width="182" height="34" rx="6" fill="var(--color-surface-2)" stroke="var(--color-border)" stroke-width="1.2"/>
+                  <text x="591" y="212" text-anchor="middle" font-size="10" fill="var(--color-text-muted)" font-style="italic">+ added on demand</text>
+                </svg>
+                <figcaption>Queue depth (ApproximateNumberOfMessagesVisible) drives a CloudWatch alarm, which scales the consumer Auto Scaling Group up or down.</figcaption>
+              </figure>
+
+              <h3>Scale on queue depth, not CPU</h3>
+              <p>Publish messages to the queue, then put a <strong>CloudWatch alarm</strong> on the <code>ApproximateNumberOfMessagesVisible</code> metric (the queue length). When the backlog grows, the alarm tells an <strong>Auto Scaling Group</strong> to add consumer instances; when the queue drains, it scales back in. Consumers can be EC2 instances, containers (ECS/EKS), or Lambda functions.</p>
+
+              <div class="grid-2">
+                <div class="card">
+                  <h3 style="margin-top:0;">Decouple application tiers</h3>
+                  <p>A classic example is media processing: a lightweight <strong>front tier</strong> accepts uploads and drops a job on the queue; a heavier <strong>back tier</strong> of GPU instances pulls jobs and processes the video. Each tier scales on its own — a spike in uploads simply lengthens the queue instead of overwhelming the workers.</p>
+                </div>
+                <div class="card">
+                  <h3 style="margin-top:0;">Buffer database writes</h3>
+                  <p>Put SQS in front of a database that cannot absorb sudden write spikes. The application writes to the queue at any rate; consumers drain it at a steady, database-friendly pace. The queue smooths the load and no writes are lost during a spike.</p>
+                </div>
+              </div>
+            </details>
+          </section>
+
+          <!-- Section 10 -->
           <section class="section" id="security">
             <details class="section__collapse" open>
               <summary>
                 <div class="section__heading">
-                  <span class="section__eyebrow">Section 8 · Security</span>
+                  <span class="section__eyebrow">Section 10 · Security</span>
                   <h2>Security</h2>
                 </div>
                 <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
@@ -578,12 +830,12 @@
             </details>
           </section>
 
-          <!-- Section 9 -->
+          <!-- Section 11 -->
           <section class="section" id="monitoring">
             <details class="section__collapse" open>
               <summary>
                 <div class="section__heading">
-                  <span class="section__eyebrow">Section 9 · Observability</span>
+                  <span class="section__eyebrow">Section 11 · Observability</span>
                   <h2>What to monitor</h2>
                 </div>
                 <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
@@ -624,12 +876,12 @@
             </details>
           </section>
 
-          <!-- Section 10 -->
+          <!-- Section 12 -->
           <section class="section" id="reference-architecture">
             <details class="section__collapse" open>
               <summary>
                 <div class="section__heading">
-                  <span class="section__eyebrow">Section 10 · Production</span>
+                  <span class="section__eyebrow">Section 12 · Production</span>
                   <h2>A production reference architecture</h2>
                 </div>
                 <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
@@ -702,149 +954,12 @@
             </details>
           </section>
 
-          <!-- Section 11 -->
-          <section class="section" id="terraform">
-            <details class="section__collapse" open>
-              <summary>
-                <div class="section__heading">
-                  <span class="section__eyebrow">Section 11 · Code</span>
-                  <h2>Terraform: SNS topic + SQS queue + DLQ</h2>
-                </div>
-                <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
-              </summary>
-              <p>A complete, production-ready module: one SNS topic, one SQS consumer queue with DLQ, KMS encryption, and a queue policy that allows SNS to publish. Copy and adapt.</p>
-
-              <h4>SNS topic</h4>
-              <div class="code-block"><pre><code>resource "aws_sns_topic" "this" {
-  name              = "${var.name}-events"
-  kms_master_key_id = var.kms_key_id   # SSE-KMS; use "alias/aws/sns" for AWS-managed
-  tags              = var.tags
-}
-
-# Optional: FIFO topic (uncomment for strict ordering)
-# resource "aws_sns_topic" "this" {
-#   name                        = "${var.name}-events.fifo"
-#   fifo_topic                  = true
-#   content_based_deduplication = true
-#   kms_master_key_id           = var.kms_key_id
-#   tags                        = var.tags
-# }</code></pre></div>
-
-              <h4>Dead Letter Queue</h4>
-              <div class="code-block"><pre><code>resource "aws_sqs_queue" "dlq" {
-  name                      = "${var.name}-dlq"
-  kms_master_key_id         = var.kms_key_id
-  message_retention_seconds = 1209600   # 14 days — long enough to investigate
-  tags                      = var.tags
-}
-
-resource "aws_cloudwatch_metric_alarm" "dlq_not_empty" {
-  alarm_name          = "${var.name}-dlq-not-empty"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = 1
-  metric_name         = "ApproximateNumberOfMessagesVisible"
-  namespace           = "AWS/SQS"
-  period              = 60
-  statistic           = "Sum"
-  threshold           = 0
-  alarm_description   = "Messages in DLQ — processing failures detected"
-  dimensions = { QueueName = aws_sqs_queue.dlq.name }
-  alarm_actions = [var.alarm_sns_topic_arn]
-}</code></pre></div>
-
-              <h4>Main consumer queue</h4>
-              <div class="code-block"><pre><code>resource "aws_sqs_queue" "this" {
-  name                       = "${var.name}-queue"
-  kms_master_key_id          = var.kms_key_id
-  visibility_timeout_seconds = 300   # must be >= your Lambda/ECS task timeout
-  message_retention_seconds  = 1209600
-  receive_wait_time_seconds  = 20    # long polling — reduces empty receives &amp; cost
-
-  redrive_policy = jsonencode({
-    deadLetterTargetArn = aws_sqs_queue.dlq.arn
-    maxReceiveCount     = 5          # move to DLQ after 5 failed attempts
-  })
-  tags = var.tags
-}
-
-# Enforce HTTPS-only access
-resource "aws_sqs_queue_policy" "this" {
-  queue_url = aws_sqs_queue.this.id
-  policy    = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Sid       = "AllowSNS"
-        Effect    = "Allow"
-        Principal = { Service = "sns.amazonaws.com" }
-        Action    = "sqs:SendMessage"
-        Resource  = aws_sqs_queue.this.arn
-        Condition = { ArnEquals = { "aws:SourceArn" = aws_sns_topic.this.arn } }
-      },
-      {
-        Sid       = "DenyInsecure"
-        Effect    = "Deny"
-        Principal = "*"
-        Action    = "sqs:*"
-        Resource  = aws_sqs_queue.this.arn
-        Condition = { Bool = { "aws:SecureTransport" = "false" } }
-      }
-    ]
-  })
-}</code></pre></div>
-
-              <h4>SNS → SQS subscription</h4>
-              <div class="code-block"><pre><code>resource "aws_sns_topic_subscription" "sqs" {
-  topic_arn            = aws_sns_topic.this.arn
-  protocol             = "sqs"
-  endpoint             = aws_sqs_queue.this.arn
-  raw_message_delivery = true   # deliver the raw SNS payload; omit the SNS envelope JSON
-
-  # Optional: filter policy — only deliver messages with matching attributes
-  # filter_policy = jsonencode({ event_type = ["order.placed", "order.updated"] })
-
-  redrive_policy = jsonencode({
-    deadLetterTargetArn = aws_sqs_queue.dlq.arn
-  })
-}</code></pre></div>
-
-              <h4>CloudWatch alarm: queue depth</h4>
-              <div class="code-block"><pre><code>resource "aws_cloudwatch_metric_alarm" "queue_depth" {
-  alarm_name          = "${var.name}-queue-depth"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = 3
-  metric_name         = "ApproximateNumberOfMessagesVisible"
-  namespace           = "AWS/SQS"
-  period              = 60
-  statistic           = "Maximum"
-  threshold           = var.depth_alarm_threshold   # e.g. 1000
-  alarm_description   = "Queue depth exceeds threshold — consumers may be falling behind"
-  dimensions = { QueueName = aws_sqs_queue.this.name }
-  alarm_actions = [var.alarm_sns_topic_arn]
-}
-
-resource "aws_cloudwatch_metric_alarm" "message_age" {
-  alarm_name          = "${var.name}-oldest-message-age"
-  comparison_operator = "GreaterThanThreshold"
-  evaluation_periods  = 2
-  metric_name         = "ApproximateAgeOfOldestMessage"
-  namespace           = "AWS/SQS"
-  period              = 60
-  statistic           = "Maximum"
-  threshold           = var.age_alarm_seconds   # e.g. 3600 for 1 hour
-  alarm_description   = "Messages sitting too long — consumer throughput issue"
-  dimensions = { QueueName = aws_sqs_queue.this.name }
-  alarm_actions = [var.alarm_sns_topic_arn]
-}</code></pre></div>
-            </details>
-          </section>
-
-          <!-- Section 12 -->
+          <!-- Section 13 -->
           <section class="section" id="mental-model">
             <details class="section__collapse" open>
               <summary>
                 <div class="section__heading">
-                  <span class="section__eyebrow">Section 12 · One slide to remember</span>
+                  <span class="section__eyebrow">Section 13 · One slide to remember</span>
                   <h2>The four-card mental model</h2>
                 </div>
                 <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
@@ -875,12 +990,12 @@ resource "aws_cloudwatch_metric_alarm" "message_age" {
             </details>
           </section>
 
-          <!-- Section 13 -->
+          <!-- Section 14 -->
           <section class="section" id="common-mistakes">
             <details class="section__collapse" open>
               <summary>
                 <div class="section__heading">
-                  <span class="section__eyebrow">Section 13 · Pitfalls</span>
+                  <span class="section__eyebrow">Section 14 · Pitfalls</span>
                   <h2>Common mistakes</h2>
                 </div>
                 <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
@@ -926,12 +1041,12 @@ resource "aws_cloudwatch_metric_alarm" "message_age" {
             </details>
           </section>
 
-          <!-- Section 14 -->
+          <!-- Section 15 -->
           <section class="section" id="references">
             <details class="section__collapse" open>
               <summary>
                 <div class="section__heading">
-                  <span class="section__eyebrow">Section 14 · Read further</span>
+                  <span class="section__eyebrow">Section 15 · Read further</span>
                   <h2>References &amp; further reading</h2>
                 </div>
                 <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
@@ -947,8 +1062,6 @@ resource "aws_cloudwatch_metric_alarm" "message_age" {
                 <li><a href="https://docs.aws.amazon.com/sns/latest/dg/sns-common-scenarios.html" rel="noopener" target="_blank">Common SNS scenarios</a> — fan-out, alerting, push to mobile, and event-driven architectures.</li>
                 <li><a href="https://aws.amazon.com/sqs/pricing/" rel="noopener" target="_blank">SQS pricing</a> — first 1M requests/month free; beyond that, Standard vs FIFO cost breakdown.</li>
                 <li><a href="https://aws.amazon.com/sns/pricing/" rel="noopener" target="_blank">SNS pricing</a> — per-request and per-delivery charges across subscriber types.</li>
-                <li><a href="https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sqs_queue" rel="noopener" target="_blank">Terraform aws_sqs_queue</a> — all arguments for the Terraform resource used in this session.</li>
-                <li><a href="https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sns_topic" rel="noopener" target="_blank">Terraform aws_sns_topic</a> — Terraform resource for SNS topic configuration.</li>
                 <li><a href="https://aws.amazon.com/blogs/compute/building-event-driven-architectures-with-amazon-sns-fifo/" rel="noopener" target="_blank">AWS Blog: Event-driven architectures with SNS FIFO</a> — end-to-end walkthrough of ordered fan-out.</li>
                 <li><a href="https://docs.aws.amazon.com/wellarchitected/latest/reliability-pillar/welcome.html" rel="noopener" target="_blank">AWS Well-Architected — Reliability Pillar</a> — broader resilience guidance that frames async messaging, retry, and circuit-breaker patterns.</li>
               </ul>

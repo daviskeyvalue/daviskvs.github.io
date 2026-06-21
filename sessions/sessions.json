@@ -2,8 +2,8 @@
   {
     "id": "aws-sqs-sns-deep-dive",
     "title": "AWS SQS & SNS Deep Dive",
-    "summary": "Decouple and scale with managed messaging — SQS queues, SNS topics, fan-out patterns, DLQs, FIFO ordering, security, and a full Terraform reference.",
-    "tags": ["AWS", "SQS", "SNS", "Messaging", "Terraform"],
+    "summary": "Decouple and scale with managed messaging — SQS queues, SNS topics, fan-out patterns, DLQs, FIFO ordering, security, and a production reference architecture.",
+    "tags": ["AWS", "SQS", "SNS", "Messaging"],
     "path": "./sessions/aws-sqs-sns-deep-dive/",
     "level": "Intermediate",
     "duration": "~35 min",
