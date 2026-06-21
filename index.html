@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AWS Upskill Sessions — Davis KVS</title>
+  <meta name="description" content="Interactive learning sessions on AWS cloud infrastructure — SQS, SNS, and more." />
+  <meta name="color-scheme" content="light dark" />
+  <link rel="stylesheet" href="./assets/css/shared.css" />
+  <link rel="stylesheet" href="./assets/css/home.css" />
+  <link rel="icon" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="%23ff9900"/><text x="50%" y="56%" font-family="Arial" font-size="28" font-weight="800" text-anchor="middle" fill="white">AWS</text></svg>' />
+  <script src="./assets/js/shared.js" defer></script>
+  <script src="./assets/js/home.js" defer></script>
+</head>
+<body>
+  <a href="#main" class="sr-only">Skip to main content</a>
+  <header class="site-header">
+    <div class="container site-header__inner">
+      <a class="brand" href="./">
+        <span class="brand__logo" aria-hidden="true">☁️</span>
+        <span>AWS Upskill</span>
+      </a>
+      <nav class="nav" aria-label="Primary">
+        <a href="#sessions">Sessions</a>
+        <a href="https://github.com/daviskeyvalue/daviskvs.github.io" rel="noopener" target="_blank">GitHub</a>
+        <button class="theme-toggle" type="button" aria-pressed="false" aria-label="Toggle color theme">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"></path>
+          </svg>
+          <span class="theme-toggle__label">Dark</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+  <main id="main">
+    <section class="hero">
+      <div class="container hero__inner">
+        <span class="hero__eyebrow">Upskill Sessions</span>
+        <h1 class="hero__title">AWS deep-dives, one service at a time.</h1>
+        <p class="hero__lede">Practical, interactive deep-dives into the AWS services engineers use every day — clear mental models, custom diagrams, runnable Terraform, and links to the docs that matter.</p>
+        <div class="hero__actions">
+          <a class="btn btn--primary" href="#sessions">Browse sessions</a>
+          <a class="btn btn--ghost" href="https://github.com/daviskeyvalue/daviskvs.github.io" rel="noopener" target="_blank">View source</a>
+        </div>
+      </div>
+    </section>
+    <section id="sessions" class="container">
+      <div class="section-head">
+        <div>
+          <h2>Sessions</h2>
+          <p class="section-head__meta">Each session is a self-contained interactive page.</p>
+        </div>
+      </div>
+      <div id="tile-grid" class="tile-grid" aria-live="polite">
+        <noscript>
+          <div class="empty">Enable JavaScript to browse sessions, or open <code>sessions/</code> directly.</div>
+        </noscript>
+      </div>
+    </section>
+  </main>
+  <footer class="site-footer">
+    <div class="container site-footer__inner">
+      <span>© <span id="year"></span> Davis KVS — built with vanilla HTML, CSS, and JS.</span>
+      <span><a href="https://github.com/daviskeyvalue/daviskvs.github.io" rel="noopener" target="_blank">Source on GitHub</a></span>
+    </div>
+  </footer>
+  <script type="application/json" id="sessions-data">
+[
+  {
+    "id": "aws-sqs-sns-deep-dive",
+    "title": "AWS SQS & SNS Deep Dive",
+    "summary": "Decouple and scale with managed messaging — SQS queues, SNS topics, fan-out patterns, DLQs, FIFO ordering, security, and a full Terraform reference.",
+    "tags": ["AWS", "SQS", "SNS", "Messaging", "Terraform"],
+    "path": "./sessions/aws-sqs-sns-deep-dive/",
+    "level": "Intermediate",
+    "duration": "~35 min",
+    "updated": "2026-06-21",
+    "logo": "SQS+SNS"
+  }
+]
+  </script>
+  <script>document.getElementById("year").textContent = new Date().getFullYear();</script>
+</body>
+</html>

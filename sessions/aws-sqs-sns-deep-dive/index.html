@@ -1,0 +1,901 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AWS SQS & SNS Deep Dive · AWS Upskill</title>
+  <meta name="description" content="A practical tour of Amazon SQS and SNS: decoupling, fan-out, DLQs, FIFO ordering, security, and a Terraform reference." />
+  <meta name="color-scheme" content="light dark" />
+  <link rel="stylesheet" href="../../assets/css/shared.css" />
+  <link rel="stylesheet" href="./styles.css" />
+  <link rel="icon" href='data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="%23ff9900"/><text x="50%" y="56%" font-family="Arial" font-size="22" font-weight="800" text-anchor="middle" fill="white">SQS</text></svg>' />
+  <script src="../../assets/js/shared.js" defer></script>
+  <script src="./main.js" defer></script>
+</head>
+<body>
+  <a href="#main" class="sr-only">Skip to main content</a>
+  <header class="site-header">
+    <div class="container site-header__inner">
+      <a class="brand" href="../../">
+        <span class="brand__logo" aria-hidden="true">☁️</span>
+        <span>AWS Upskill</span>
+      </a>
+      <nav class="nav" aria-label="Primary">
+        <a href="../../">All sessions</a>
+        <a href="https://github.com/daviskeyvalue/daviskvs.github.io" rel="noopener" target="_blank">GitHub</a>
+        <button class="theme-toggle" type="button" aria-pressed="false" aria-label="Toggle color theme">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3a7 7 0 0 0 9.79 9.79z"></path>
+          </svg>
+          <span class="theme-toggle__label">Dark</span>
+        </button>
+      </nav>
+    </div>
+  </header>
+
+  <main id="main">
+    <div class="container">
+      <nav class="breadcrumb" aria-label="Breadcrumb">
+        <a href="../../">Home</a> &nbsp;›&nbsp; Sessions &nbsp;›&nbsp; AWS SQS &amp; SNS Deep Dive
+      </nav>
+      <h1 class="session__title">AWS SQS &amp; SNS Deep Dive</h1>
+      <div class="session__meta">
+        <span class="tag">AWS</span>
+        <span class="tag">SQS</span>
+        <span class="tag">SNS</span>
+        <span class="tag">Messaging</span>
+        <span class="tag">Terraform</span>
+        &nbsp;·&nbsp; Intermediate &nbsp;·&nbsp; ~35 min &nbsp;·&nbsp; Updated 2026-06-21
+      </div>
+      <p>A practical tour of Amazon Simple Queue Service and Simple Notification Service: how they remove tight coupling from distributed systems, the building blocks that make async architectures reliable, and a real Terraform recipe you can adapt today.</p>
+    </div>
+
+    <div class="container">
+      <div class="section-controls" role="toolbar" aria-label="Section controls">
+        <button class="section-controls__btn" data-action="expand-all" type="button">Expand all</button>
+        <button class="section-controls__btn" data-action="collapse-all" type="button">Collapse all</button>
+      </div>
+
+      <div class="session">
+        <!-- TOC -->
+        <nav class="toc" aria-label="On this page">
+          <h2>On this page</h2>
+          <ol>
+            <li><a href="#why-messaging">Why Messaging</a></li>
+            <li><a href="#sqs-architecture">SQS Architecture</a></li>
+            <li><a href="#queue-types">Queue Types</a></li>
+            <li><a href="#sns-architecture">SNS Architecture</a></li>
+            <li><a href="#sqs-vs-sns">SQS vs SNS</a></li>
+            <li><a href="#fan-out">Fan-out Pattern</a></li>
+            <li><a href="#message-lifecycle">Message Lifecycle &amp; DLQ</a></li>
+            <li><a href="#security">Security</a></li>
+            <li><a href="#monitoring">Monitoring</a></li>
+            <li><a href="#reference-architecture">Reference Architecture</a></li>
+            <li><a href="#terraform">Terraform Example</a></li>
+            <li><a href="#mental-model">Mental Model</a></li>
+            <li><a href="#common-mistakes">Common Mistakes</a></li>
+            <li><a href="#references">References</a></li>
+          </ol>
+        </nav>
+
+        <!-- Sections -->
+        <div>
+
+          <!-- Section 1 -->
+          <section class="section" id="why-messaging">
+            <details class="section__collapse" open>
+              <summary>
+                <div class="section__heading">
+                  <span class="section__eyebrow">Section 1 · Motivation</span>
+                  <h2>Why messaging exists</h2>
+                </div>
+                <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+              </summary>
+              <p>In a monolith, components call each other directly and synchronously. As systems grow, this creates a web of tight dependencies: a slow downstream service blocks callers, a crashed service takes out its callers, and scaling one component forces you to scale everything it depends on.</p>
+              <p>Amazon SQS and SNS are managed messaging primitives that break these direct dependencies. They let producers and consumers run on their own schedules, at their own speeds, and fail independently.</p>
+              <div class="table-wrap">
+                <table class="data">
+                  <thead><tr><th>Concern</th><th>Tight coupling (direct calls)</th><th>With SQS / SNS</th></tr></thead>
+                  <tbody>
+                    <tr><td>Downstream slowness</td><td>Caller blocks and times out</td><td>Producer enqueues and moves on; consumer drains at its own pace</td></tr>
+                    <tr><td>Downstream crash</td><td>Error propagates upstream immediately</td><td>Messages stay in the queue; consumer retries when it recovers</td></tr>
+                    <tr><td>Burst traffic</td><td>Downstream gets overwhelmed</td><td>Queue absorbs the burst; consumer scales independently</td></tr>
+                    <tr><td>Multiple consumers</td><td>Caller must know about every consumer</td><td>SNS fans out to all subscribers in one publish call</td></tr>
+                    <tr><td>Audit / replay</td><td>Lost if not explicitly logged</td><td>Messages retained in queue up to 14 days</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="callout">
+                <p class="callout__title">The core trade-off</p>
+                <p>You trade synchronous simplicity for asynchronous resilience. Eventual consistency becomes the default — your application must be designed to tolerate processing messages out of order (Standard queues) and to handle duplicate deliveries (at-least-once). FIFO queues give you ordering and deduplication at the cost of lower throughput.</p>
+              </div>
+            </details>
+          </section>
+
+          <!-- Section 2 -->
+          <section class="section" id="sqs-architecture">
+            <details class="section__collapse" open>
+              <summary>
+                <div class="section__heading">
+                  <span class="section__eyebrow">Section 2 · SQS</span>
+                  <h2>SQS at a glance</h2>
+                </div>
+                <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+              </summary>
+              <p>Amazon SQS is a <strong>pull-based</strong>, fully managed message queue. Producers send messages to a queue URL; consumers poll the queue using <code>ReceiveMessage</code>, process the message, and delete it. AWS manages replication, scaling, and durability behind the scenes.</p>
+
+              <figure class="figure">
+                <svg viewBox="0 0 700 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SQS architecture diagram" style="max-width:700px;margin:0 auto;">
+                  <defs>
+                    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="var(--color-primary)"/></marker>
+                  </defs>
+                  <!-- Producers -->
+                  <rect x="20" y="60" width="120" height="40" rx="8" fill="var(--color-surface-2)" stroke="var(--color-border)" stroke-width="1.5"/>
+                  <text x="80" y="85" text-anchor="middle" font-size="13" fill="var(--color-text)" font-weight="600">Producer A</text>
+                  <rect x="20" y="120" width="120" height="40" rx="8" fill="var(--color-surface-2)" stroke="var(--color-border)" stroke-width="1.5"/>
+                  <text x="80" y="145" text-anchor="middle" font-size="13" fill="var(--color-text)" font-weight="600">Producer B</text>
+                  <!-- Arrow in -->
+                  <line x1="140" y1="80" x2="220" y2="110" stroke="var(--color-primary)" stroke-width="2" marker-end="url(#arr)" class="svg-flow"/>
+                  <line x1="140" y1="140" x2="220" y2="120" stroke="var(--color-primary)" stroke-width="2" marker-end="url(#arr)" class="svg-flow"/>
+                  <!-- SQS Queue -->
+                  <rect x="225" y="75" width="250" height="70" rx="10" fill="color-mix(in srgb,var(--color-primary) 10%,var(--color-surface))" stroke="var(--color-primary)" stroke-width="2"/>
+                  <text x="350" y="103" text-anchor="middle" font-size="14" fill="var(--color-primary)" font-weight="700">SQS Queue</text>
+                  <text x="350" y="120" text-anchor="middle" font-size="11" fill="var(--color-text-muted)">up to 256 KB / msg · 14-day retention</text>
+                  <text x="350" y="136" text-anchor="middle" font-size="11" fill="var(--color-text-muted)">poll via ReceiveMessage</text>
+                  <!-- Arrow out -->
+                  <line x1="475" y1="100" x2="555" y2="80" stroke="var(--color-success)" stroke-width="2" marker-end="url(#arr)" class="svg-flow"/>
+                  <line x1="475" y1="110" x2="555" y2="130" stroke="var(--color-success)" stroke-width="2" marker-end="url(#arr)" class="svg-flow"/>
+                  <!-- Consumers -->
+                  <rect x="560" y="58" width="120" height="40" rx="8" fill="var(--color-surface-2)" stroke="var(--color-border)" stroke-width="1.5"/>
+                  <text x="620" y="83" text-anchor="middle" font-size="13" fill="var(--color-text)" font-weight="600">Consumer A</text>
+                  <rect x="560" y="118" width="120" height="40" rx="8" fill="var(--color-surface-2)" stroke="var(--color-border)" stroke-width="1.5"/>
+                  <text x="620" y="143" text-anchor="middle" font-size="13" fill="var(--color-text)" font-weight="600">Consumer B</text>
+                  <!-- Labels -->
+                  <text x="80" y="200" text-anchor="middle" font-size="11" fill="var(--color-text-muted)">send</text>
+                  <text x="620" y="200" text-anchor="middle" font-size="11" fill="var(--color-text-muted)">poll &amp; delete</text>
+                </svg>
+                <figcaption>Producers send; consumers poll independently. Each message is delivered to exactly one consumer (competing consumers pattern).</figcaption>
+              </figure>
+
+              <div class="table-wrap">
+                <table class="data">
+                  <thead><tr><th>Property</th><th>Value / Limit</th></tr></thead>
+                  <tbody>
+                    <tr><td>Message size</td><td>Up to 256 KB (use S3 + pointer for larger payloads)</td></tr>
+                    <tr><td>Retention period</td><td>1 minute to 14 days (default: 4 days)</td></tr>
+                    <tr><td>Visibility timeout</td><td>0 s – 12 hours (default: 30 s)</td></tr>
+                    <tr><td>In-flight messages</td><td>Standard: 120,000 · FIFO: 20,000</td></tr>
+                    <tr><td>Delivery</td><td>At-least-once (Standard); exactly-once (FIFO)</td></tr>
+                    <tr><td>Long polling wait</td><td>Up to 20 s — reduces empty responses and cost</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </details>
+          </section>
+
+          <!-- Section 3 -->
+          <section class="section" id="queue-types">
+            <details class="section__collapse" open>
+              <summary>
+                <div class="section__heading">
+                  <span class="section__eyebrow">Section 3 · Queue types</span>
+                  <h2>Standard vs FIFO queues</h2>
+                </div>
+                <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+              </summary>
+              <div class="tabs">
+                <div class="tabs__list" role="tablist" aria-label="Queue type comparison">
+                  <button class="tabs__btn" role="tab" data-tab="standard" aria-selected="true">Standard Queue</button>
+                  <button class="tabs__btn" role="tab" data-tab="fifo">FIFO Queue</button>
+                  <button class="tabs__btn" role="tab" data-tab="compare">Side-by-side</button>
+                </div>
+                <div class="tabs__panel" data-panel="standard" role="tabpanel">
+                  <h3>Standard Queue</h3>
+                  <p>Best for maximum throughput. Messages may be delivered <strong>out of order</strong> and <strong>more than once</strong> — your consumer must be idempotent.</p>
+                  <ul>
+                    <li><strong>Throughput:</strong> Nearly unlimited — scales automatically with load.</li>
+                    <li><strong>Ordering:</strong> Best-effort. AWS tries to preserve order but cannot guarantee it.</li>
+                    <li><strong>Delivery:</strong> At-least-once. A message may be delivered multiple times if the consumer fails to delete it within the visibility timeout.</li>
+                    <li><strong>Use case:</strong> Email sending, image resizing, log ingestion, any workload where duplicates are handled by idempotency keys.</li>
+                  </ul>
+                  <div class="callout callout--warn">
+                    <p class="callout__title">Make consumers idempotent</p>
+                    <p>Always design your consumer to tolerate receiving the same message twice. Use a database upsert or a deduplication table keyed on the message's <code>MessageId</code>.</p>
+                  </div>
+                </div>
+                <div class="tabs__panel" data-panel="fifo" role="tabpanel" hidden>
+                  <h3>FIFO Queue</h3>
+                  <p>Strict ordering and exactly-once processing within a <strong>message group</strong>. Required when message order matters (financial transactions, state machines).</p>
+                  <ul>
+                    <li><strong>Throughput:</strong> Up to 3,000 msg/s with batching; 300 msg/s without. High-throughput FIFO mode: up to 70,000 msg/s.</li>
+                    <li><strong>Ordering:</strong> Strict FIFO within each <code>MessageGroupId</code>. Different groups process in parallel.</li>
+                    <li><strong>Delivery:</strong> Exactly-once within the 5-minute deduplication window. Duplicate messages (same <code>MessageDeduplicationId</code>) are rejected.</li>
+                    <li><strong>Name suffix:</strong> Queue name <em>must</em> end in <code>.fifo</code>.</li>
+                    <li><strong>Use case:</strong> Payment processing, order workflows, event sourcing where replay order is critical.</li>
+                  </ul>
+                  <div class="callout callout--ok">
+                    <p class="callout__title">Message Group ID = unit of ordering</p>
+                    <p>Messages with the same <code>MessageGroupId</code> are processed one at a time, in order. Use a user ID, order ID, or any natural partition key. Different groups run in parallel — no head-of-line blocking across groups.</p>
+                  </div>
+                </div>
+                <div class="tabs__panel" data-panel="compare" role="tabpanel" hidden>
+                  <div class="table-wrap">
+                    <table class="data">
+                      <thead><tr><th>Feature</th><th>Standard</th><th>FIFO</th></tr></thead>
+                      <tbody>
+                        <tr><td>Throughput</td><td>Nearly unlimited</td><td>300–70,000 msg/s</td></tr>
+                        <tr><td>Ordering</td><td>Best-effort</td><td>Strict per MessageGroupId</td></tr>
+                        <tr><td>Delivery</td><td>At-least-once</td><td>Exactly-once (5 min window)</td></tr>
+                        <tr><td>Duplicates</td><td>Possible</td><td>Rejected via deduplication ID</td></tr>
+                        <tr><td>Name format</td><td>Any valid name</td><td>Must end in <code>.fifo</code></td></tr>
+                        <tr><td>SNS compatible</td><td>Yes</td><td>Yes (SNS FIFO → SQS FIFO)</td></tr>
+                        <tr><td>Typical use</td><td>High-volume, idempotent tasks</td><td>Ordered workflows, transactions</td></tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </details>
+          </section>
+
+          <!-- Section 4 -->
+          <section class="section" id="sns-architecture">
+            <details class="section__collapse" open>
+              <summary>
+                <div class="section__heading">
+                  <span class="section__eyebrow">Section 4 · SNS</span>
+                  <h2>SNS at a glance</h2>
+                </div>
+                <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+              </summary>
+              <p>Amazon SNS is a <strong>push-based</strong>, fully managed pub/sub service. A publisher sends one message to an SNS topic; SNS immediately pushes copies of that message to all configured subscribers. No polling required.</p>
+
+              <figure class="figure">
+                <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SNS fan-out diagram" style="max-width:700px;margin:0 auto;">
+                  <defs>
+                    <marker id="arr2" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="var(--color-accent)"/></marker>
+                  </defs>
+                  <!-- Publisher -->
+                  <rect x="20" y="110" width="130" height="50" rx="8" fill="var(--color-surface-2)" stroke="var(--color-border)" stroke-width="1.5"/>
+                  <text x="85" y="140" text-anchor="middle" font-size="13" fill="var(--color-text)" font-weight="600">Publisher</text>
+                  <!-- Arrow to SNS -->
+                  <line x1="150" y1="135" x2="240" y2="135" stroke="var(--color-accent)" stroke-width="2" marker-end="url(#arr2)" class="svg-flow"/>
+                  <text x="195" y="128" text-anchor="middle" font-size="10" fill="var(--color-text-muted)">Publish</text>
+                  <!-- SNS Topic -->
+                  <rect x="245" y="100" width="160" height="70" rx="10" fill="color-mix(in srgb,var(--color-accent) 12%,var(--color-surface))" stroke="var(--color-accent)" stroke-width="2"/>
+                  <text x="325" y="130" text-anchor="middle" font-size="14" fill="var(--color-accent)" font-weight="700">SNS Topic</text>
+                  <text x="325" y="148" text-anchor="middle" font-size="11" fill="var(--color-text-muted)">fan-out to all subscribers</text>
+                  <!-- Subscribers -->
+                  <!-- SQS -->
+                  <line x1="405" y1="120" x2="490" y2="65" stroke="var(--color-primary)" stroke-width="1.8" marker-end="url(#arr2)"/>
+                  <rect x="495" y="42" width="130" height="40" rx="8" fill="var(--color-surface-2)" stroke="var(--color-border)" stroke-width="1.5"/>
+                  <text x="560" y="67" text-anchor="middle" font-size="12" fill="var(--color-text)" font-weight="600">SQS Queue</text>
+                  <!-- Lambda -->
+                  <line x1="405" y1="130" x2="490" y2="120" stroke="var(--color-primary)" stroke-width="1.8" marker-end="url(#arr2)"/>
+                  <rect x="495" y="98" width="130" height="40" rx="8" fill="var(--color-surface-2)" stroke="var(--color-border)" stroke-width="1.5"/>
+                  <text x="560" y="123" text-anchor="middle" font-size="12" fill="var(--color-text)" font-weight="600">Lambda</text>
+                  <!-- HTTP -->
+                  <line x1="405" y1="140" x2="490" y2="165" stroke="var(--color-primary)" stroke-width="1.8" marker-end="url(#arr2)"/>
+                  <rect x="495" y="148" width="130" height="40" rx="8" fill="var(--color-surface-2)" stroke="var(--color-border)" stroke-width="1.5"/>
+                  <text x="560" y="173" text-anchor="middle" font-size="12" fill="var(--color-text)" font-weight="600">HTTPS endpoint</text>
+                  <!-- Email -->
+                  <line x1="405" y1="150" x2="490" y2="215" stroke="var(--color-primary)" stroke-width="1.8" marker-end="url(#arr2)"/>
+                  <rect x="495" y="198" width="130" height="40" rx="8" fill="var(--color-surface-2)" stroke="var(--color-border)" stroke-width="1.5"/>
+                  <text x="560" y="223" text-anchor="middle" font-size="12" fill="var(--color-text)" font-weight="600">Email / SMS</text>
+                  <text x="560" y="265" text-anchor="middle" font-size="10" fill="var(--color-text-muted)">Subscribers</text>
+                </svg>
+                <figcaption>One publish call fans out to every subscriber simultaneously — SQS, Lambda, HTTP, email, SMS, and more.</figcaption>
+              </figure>
+
+              <h3>Subscription types</h3>
+              <div class="table-wrap">
+                <table class="data">
+                  <thead><tr><th>Subscriber type</th><th>Use case</th><th>Delivery guarantee</th></tr></thead>
+                  <tbody>
+                    <tr><td>SQS queue</td><td>Async processing with buffering and retry</td><td>At-least-once via SQS</td></tr>
+                    <tr><td>Lambda</td><td>Immediate serverless invocation</td><td>At-least-once; retry on Lambda errors</td></tr>
+                    <tr><td>HTTPS endpoint</td><td>Webhooks to external services</td><td>Retry with backoff; dead-letter after 3 days</td></tr>
+                    <tr><td>Email / Email-JSON</td><td>Human alerts and notifications</td><td>Best-effort</td></tr>
+                    <tr><td>SMS</td><td>Text alerts and OTPs</td><td>Best-effort</td></tr>
+                    <tr><td>Kinesis Data Firehose</td><td>Stream to S3 / Redshift / analytics</td><td>At-least-once via Firehose</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="callout">
+                <p class="callout__title">Message Filtering</p>
+                <p>Subscribers can attach a <strong>filter policy</strong> (JSON) that tells SNS to deliver only messages whose attributes match the policy. This lets a single topic serve multiple consumer types without each consumer receiving every message. Example: an "order-events" topic filters to send <code>status=SHIPPED</code> events only to the logistics queue.</p>
+              </div>
+            </details>
+          </section>
+
+          <!-- Section 5 -->
+          <section class="section" id="sqs-vs-sns">
+            <details class="section__collapse" open>
+              <summary>
+                <div class="section__heading">
+                  <span class="section__eyebrow">Section 5 · Comparison</span>
+                  <h2>SQS vs SNS — when to use which</h2>
+                </div>
+                <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+              </summary>
+              <div class="table-wrap">
+                <table class="data">
+                  <thead><tr><th>Aspect</th><th>SQS</th><th>SNS</th></tr></thead>
+                  <tbody>
+                    <tr><td>Model</td><td>Pull (consumer polls)</td><td>Push (SNS delivers)</td></tr>
+                    <tr><td>Pattern</td><td>Point-to-point (one consumer per message)</td><td>Pub/Sub (all subscribers receive every message)</td></tr>
+                    <tr><td>Persistence</td><td>Yes — up to 14 days</td><td>No — messages not stored after delivery attempt</td></tr>
+                    <tr><td>Consumers</td><td>Competing consumers share the load</td><td>All subscribers receive each message</td></tr>
+                    <tr><td>Use when</td><td>You need buffering, retry, and work distribution</td><td>You need to broadcast to multiple systems at once</td></tr>
+                    <tr><td>Typical combo</td><td>Task queue behind a worker fleet</td><td>Event broadcast + SQS queues per consumer</td></tr>
+                  </tbody>
+                </table>
+              </div>
+              <div class="callout callout--ok">
+                <p class="callout__title">The answer is usually: both.</p>
+                <p>SQS and SNS are complementary. The most common production pattern is <strong>SNS → SQS</strong>: SNS fans out an event to multiple SQS queues, each owned by a different consumer team. SQS provides the buffer, retry, and DLQ; SNS provides the fan-out. Together they give you resilient, decoupled, observable messaging.</p>
+              </div>
+            </details>
+          </section>
+
+          <!-- Section 6 -->
+          <section class="section" id="fan-out">
+            <details class="section__collapse" open>
+              <summary>
+                <div class="section__heading">
+                  <span class="section__eyebrow">Section 6 · Pattern</span>
+                  <h2>The fan-out pattern</h2>
+                </div>
+                <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+              </summary>
+              <p>Fan-out decouples the event producer from every downstream consumer. When an order is placed, the "Orders" service publishes one event to SNS. SNS simultaneously delivers it to: an inventory queue, a shipping queue, an analytics queue, and an email service — each evolving independently.</p>
+
+              <figure class="figure">
+                <svg viewBox="0 0 720 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Fan-out pattern diagram" style="max-width:720px;margin:0 auto;">
+                  <defs>
+                    <marker id="arr3" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="var(--color-accent)"/></marker>
+                    <marker id="arr4" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="var(--color-primary)"/></marker>
+                  </defs>
+                  <!-- Orders service -->
+                  <rect x="10" y="130" width="130" height="50" rx="8" fill="var(--color-surface-2)" stroke="var(--color-border)" stroke-width="1.5"/>
+                  <text x="75" y="152" text-anchor="middle" font-size="12" fill="var(--color-text)" font-weight="700">Orders Service</text>
+                  <text x="75" y="168" text-anchor="middle" font-size="10" fill="var(--color-text-muted)">order.placed event</text>
+                  <!-- Arrow to SNS -->
+                  <line x1="140" y1="155" x2="225" y2="155" stroke="var(--color-accent)" stroke-width="2" marker-end="url(#arr3)" class="svg-flow"/>
+                  <!-- SNS Topic -->
+                  <rect x="230" y="120" width="140" height="70" rx="10" fill="color-mix(in srgb,var(--color-accent) 12%,var(--color-surface))" stroke="var(--color-accent)" stroke-width="2"/>
+                  <text x="300" y="152" text-anchor="middle" font-size="13" fill="var(--color-accent)" font-weight="700">SNS: orders</text>
+                  <text x="300" y="170" text-anchor="middle" font-size="10" fill="var(--color-text-muted)">fan-out topic</text>
+                  <!-- Fan-out lines -->
+                  <line x1="370" y1="140" x2="440" y2="60" stroke="var(--color-primary)" stroke-width="1.8" marker-end="url(#arr4)"/>
+                  <line x1="370" y1="148" x2="440" y2="120" stroke="var(--color-primary)" stroke-width="1.8" marker-end="url(#arr4)"/>
+                  <line x1="370" y1="163" x2="440" y2="185" stroke="var(--color-primary)" stroke-width="1.8" marker-end="url(#arr4)"/>
+                  <line x1="370" y1="170" x2="440" y2="250" stroke="var(--color-primary)" stroke-width="1.8" marker-end="url(#arr4)"/>
+                  <!-- SQS Queues -->
+                  <rect x="445" y="38" width="150" height="40" rx="8" fill="color-mix(in srgb,var(--color-primary) 10%,var(--color-surface))" stroke="var(--color-primary)" stroke-width="1.5"/>
+                  <text x="520" y="63" text-anchor="middle" font-size="12" fill="var(--color-text)" font-weight="600">SQS: inventory</text>
+                  <rect x="445" y="100" width="150" height="40" rx="8" fill="color-mix(in srgb,var(--color-primary) 10%,var(--color-surface))" stroke="var(--color-primary)" stroke-width="1.5"/>
+                  <text x="520" y="125" text-anchor="middle" font-size="12" fill="var(--color-text)" font-weight="600">SQS: shipping</text>
+                  <rect x="445" y="162" width="150" height="40" rx="8" fill="color-mix(in srgb,var(--color-primary) 10%,var(--color-surface))" stroke="var(--color-primary)" stroke-width="1.5"/>
+                  <text x="520" y="187" text-anchor="middle" font-size="12" fill="var(--color-text)" font-weight="600">SQS: analytics</text>
+                  <rect x="445" y="228" width="150" height="40" rx="8" fill="color-mix(in srgb,var(--color-primary) 10%,var(--color-surface))" stroke="var(--color-primary)" stroke-width="1.5"/>
+                  <text x="520" y="253" text-anchor="middle" font-size="12" fill="var(--color-text)" font-weight="600">SQS: email-notif</text>
+                  <!-- Consumers -->
+                  <line x1="595" y1="58" x2="640" y2="58" stroke="var(--color-success)" stroke-width="1.5" marker-end="url(#arr4)"/>
+                  <text x="660" y="63" font-size="11" fill="var(--color-text-muted)">worker</text>
+                  <line x1="595" y1="120" x2="640" y2="120" stroke="var(--color-success)" stroke-width="1.5" marker-end="url(#arr4)"/>
+                  <text x="660" y="125" font-size="11" fill="var(--color-text-muted)">worker</text>
+                  <line x1="595" y1="182" x2="640" y2="182" stroke="var(--color-success)" stroke-width="1.5" marker-end="url(#arr4)"/>
+                  <text x="660" y="187" font-size="11" fill="var(--color-text-muted)">worker</text>
+                  <line x1="595" y1="248" x2="640" y2="248" stroke="var(--color-success)" stroke-width="1.5" marker-end="url(#arr4)"/>
+                  <text x="660" y="253" font-size="11" fill="var(--color-text-muted)">Lambda</text>
+                </svg>
+                <figcaption>One SNS publish → four independent SQS queues. Each consumer team owns and scales their queue independently.</figcaption>
+              </figure>
+
+              <h3>Why SNS → SQS instead of SNS → Lambda directly?</h3>
+              <ul>
+                <li><strong>Buffer:</strong> If the consumer is down or slow, messages wait in the queue (up to 14 days) instead of being lost.</li>
+                <li><strong>Retry:</strong> SQS automatically makes the message available again if the consumer crashes mid-processing (visibility timeout expires).</li>
+                <li><strong>DLQ:</strong> After N failed attempts, the message moves to a dead-letter queue for inspection — no silent loss.</li>
+                <li><strong>Rate control:</strong> Consumers can pull at their own rate, preventing Lambda concurrency spikes or DB overload.</li>
+              </ul>
+            </details>
+          </section>
+
+          <!-- Section 7 -->
+          <section class="section" id="message-lifecycle">
+            <details class="section__collapse" open>
+              <summary>
+                <div class="section__heading">
+                  <span class="section__eyebrow">Section 7 · Reliability</span>
+                  <h2>Message lifecycle &amp; Dead Letter Queues</h2>
+                </div>
+                <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+              </summary>
+              <p>Understanding the visibility timeout is essential to building reliable SQS consumers. A message that isn't explicitly deleted becomes visible again after the timeout — enabling automatic retry without any extra retry logic in the producer.</p>
+
+              <figure class="figure">
+                <svg viewBox="0 0 700 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SQS message lifecycle" style="max-width:700px;margin:0 auto;">
+                  <defs>
+                    <marker id="arr5" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="var(--color-primary)"/></marker>
+                    <marker id="arr6" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="var(--color-danger)"/></marker>
+                    <marker id="arr7" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="var(--color-success)"/></marker>
+                  </defs>
+                  <!-- States -->
+                  <rect x="20" y="80" width="110" height="40" rx="8" fill="color-mix(in srgb,var(--color-primary) 15%,var(--color-surface))" stroke="var(--color-primary)" stroke-width="1.5"/>
+                  <text x="75" y="105" text-anchor="middle" font-size="12" fill="var(--color-text)" font-weight="600">Visible</text>
+                  <line x1="130" y1="100" x2="195" y2="100" stroke="var(--color-primary)" stroke-width="2" marker-end="url(#arr5)"/>
+                  <text x="162" y="92" text-anchor="middle" font-size="9" fill="var(--color-text-muted)">ReceiveMsg</text>
+                  <rect x="200" y="80" width="130" height="40" rx="8" fill="color-mix(in srgb,var(--color-warning) 15%,var(--color-surface))" stroke="var(--color-warning)" stroke-width="1.5"/>
+                  <text x="265" y="105" text-anchor="middle" font-size="12" fill="var(--color-text)" font-weight="600">In-flight (hidden)</text>
+                  <!-- Success path -->
+                  <line x1="330" y1="88" x2="420" y2="65" stroke="var(--color-success)" stroke-width="2" marker-end="url(#arr7)"/>
+                  <text x="375" y="72" text-anchor="middle" font-size="9" fill="var(--color-success)">DeleteMessage</text>
+                  <rect x="425" y="50" width="100" height="34" rx="8" fill="color-mix(in srgb,var(--color-success) 15%,var(--color-surface))" stroke="var(--color-success)" stroke-width="1.5"/>
+                  <text x="475" y="72" text-anchor="middle" font-size="11" fill="var(--color-text)" font-weight="600">✓ Done</text>
+                  <!-- Timeout path -->
+                  <line x1="330" y1="100" x2="420" y2="100" stroke="var(--color-warning)" stroke-width="2" marker-end="url(#arr5)"/>
+                  <text x="375" y="92" text-anchor="middle" font-size="9" fill="var(--color-warning)">timeout → visible</text>
+                  <line x1="420" y1="100" x2="420" y2="80" stroke="var(--color-warning)" stroke-width="1.5"/>
+                  <line x1="420" y1="80" x2="135" y2="80" stroke="var(--color-warning)" stroke-width="1.5" marker-end="url(#arr5)" stroke-dasharray="4 3"/>
+                  <!-- DLQ path -->
+                  <line x1="330" y1="112" x2="420" y2="148" stroke="var(--color-danger)" stroke-width="2" marker-end="url(#arr6)"/>
+                  <text x="375" y="145" text-anchor="middle" font-size="9" fill="var(--color-danger)">maxReceiveCount hit</text>
+                  <rect x="425" y="130" width="110" height="34" rx="8" fill="color-mix(in srgb,var(--color-danger) 12%,var(--color-surface))" stroke="var(--color-danger)" stroke-width="1.5"/>
+                  <text x="480" y="152" text-anchor="middle" font-size="11" fill="var(--color-text)" font-weight="600">Dead Letter Q</text>
+                </svg>
+                <figcaption>Message lifecycle: received → processed (deleted) or timed out (retried) or exhausted (DLQ).</figcaption>
+              </figure>
+
+              <h3>Dead Letter Queues (DLQ)</h3>
+              <p>A DLQ is a separate SQS queue that receives messages that fail to be processed after <code>maxReceiveCount</code> attempts. It is your safety net for poison-pill messages — messages that consistently cause consumer errors.</p>
+              <ul>
+                <li>Set <code>maxReceiveCount</code> = 3–5 for most workloads. Set higher if temporary errors (network blips) are common.</li>
+                <li>DLQ retention: set longer than the source queue. You want time to inspect failures.</li>
+                <li>Monitor <code>ApproximateNumberOfMessagesVisible</code> on the DLQ and alarm when it is &gt; 0.</li>
+                <li>SNS subscriptions also support a DLQ for failed delivery attempts — set one on every production subscription.</li>
+              </ul>
+              <div class="callout callout--danger">
+                <p class="callout__title">A DLQ without an alarm is worthless</p>
+                <p>Messages silently pile up in the DLQ while your system appears healthy. Always create a CloudWatch alarm on <code>ApproximateNumberOfMessagesVisible</code> for every DLQ. Without it you may not notice a processing failure for days.</p>
+              </div>
+            </details>
+          </section>
+
+          <!-- Section 8 -->
+          <section class="section" id="security">
+            <details class="section__collapse" open>
+              <summary>
+                <div class="section__heading">
+                  <span class="section__eyebrow">Section 8 · Security</span>
+                  <h2>Security</h2>
+                </div>
+                <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+              </summary>
+              <div class="grid-2">
+                <div class="card">
+                  <h3>Access control (IAM + resource policies)</h3>
+                  <p>SQS and SNS have two policy layers:</p>
+                  <ul>
+                    <li><strong>Identity-based (IAM):</strong> Attach policies to IAM roles/users. Best for same-account access.</li>
+                    <li><strong>Resource-based (queue/topic policy):</strong> Required for cross-account access, and for allowing SNS to send to SQS. Always scope to specific principals and actions — avoid <code>*</code> principals.</li>
+                  </ul>
+                </div>
+                <div class="card">
+                  <h3>Encryption</h3>
+                  <ul>
+                    <li><strong>In transit:</strong> All API calls use TLS. Use HTTPS endpoints. Enforce with a condition <code>aws:SecureTransport: true</code> in the queue policy.</li>
+                    <li><strong>At rest (SSE-SQS):</strong> AWS-managed key. Zero config, no extra cost. Sufficient for most workloads.</li>
+                    <li><strong>At rest (SSE-KMS):</strong> Customer-managed key. Required for regulatory environments. Adds per-request KMS charges; consider batching.</li>
+                  </ul>
+                </div>
+                <div class="card">
+                  <h3>VPC endpoints (PrivateLink)</h3>
+                  <p>Create an interface VPC endpoint for SQS and SNS. Traffic from your VPC stays on the AWS backbone — it never touches the public internet. Combine with an endpoint policy to restrict which queues/topics can be accessed.</p>
+                </div>
+                <div class="card">
+                  <h3>Least-privilege checklist</h3>
+                  <ul class="checklist">
+                    <li>Producers: <code>sqs:SendMessage</code> only</li>
+                    <li>Consumers: <code>sqs:ReceiveMessage</code>, <code>sqs:DeleteMessage</code>, <code>sqs:GetQueueAttributes</code> only</li>
+                    <li>SNS publish: <code>sns:Publish</code> scoped to specific topic ARN</li>
+                    <li>SQS queue policy: allow SNS service principal to <code>SendMessage</code></li>
+                    <li>Never use <code>*</code> as principal in a resource policy on production queues</li>
+                  </ul>
+                </div>
+              </div>
+            </details>
+          </section>
+
+          <!-- Section 9 -->
+          <section class="section" id="monitoring">
+            <details class="section__collapse" open>
+              <summary>
+                <div class="section__heading">
+                  <span class="section__eyebrow">Section 9 · Observability</span>
+                  <h2>What to monitor</h2>
+                </div>
+                <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+              </summary>
+              <p>Five CloudWatch metrics cover 90% of "is my messaging healthy?" — alarm on these first.</p>
+              <div class="grid-2">
+                <div class="card">
+                  <p style="font-size:.8rem;font-weight:700;color:var(--color-primary);margin-bottom:.25rem;">SQS</p>
+                  <h3 style="margin-top:0;">ApproximateNumberOfMessagesVisible</h3>
+                  <p>Queue depth — messages waiting to be processed. Rising depth = consumers are falling behind. Alarm at your SLA-based threshold.</p>
+                </div>
+                <div class="card">
+                  <p style="font-size:.8rem;font-weight:700;color:var(--color-primary);margin-bottom:.25rem;">SQS</p>
+                  <h3 style="margin-top:0;">ApproximateAgeOfOldestMessage</h3>
+                  <p>How old is the oldest unprocessed message? A rising age means messages are stuck. Alarm well before your retention window expires.</p>
+                </div>
+                <div class="card">
+                  <p style="font-size:.8rem;font-weight:700;color:var(--color-danger);margin-bottom:.25rem;">SQS DLQ</p>
+                  <h3 style="margin-top:0;">ApproximateNumberOfMessagesVisible (DLQ)</h3>
+                  <p>Any message here means something failed &gt; maxReceiveCount times. Alarm at &gt; 0. Investigate immediately.</p>
+                </div>
+                <div class="card">
+                  <p style="font-size:.8rem;font-weight:700;color:var(--color-accent);margin-bottom:.25rem;">SNS</p>
+                  <h3 style="margin-top:0;">NumberOfNotificationsFailed</h3>
+                  <p>SNS failed to deliver to a subscriber. Check endpoint health, queue permissions, and subscription filter policies.</p>
+                </div>
+                <div class="card">
+                  <p style="font-size:.8rem;font-weight:700;color:var(--color-accent);margin-bottom:.25rem;">SNS</p>
+                  <h3 style="margin-top:0;">NumberOfMessagesPublished</h3>
+                  <p>Sudden drop may mean the upstream service stopped publishing. Correlate with your application deploy events.</p>
+                </div>
+                <div class="card">
+                  <p style="font-size:.8rem;font-weight:700;color:var(--color-success);margin-bottom:.25rem;">SQS</p>
+                  <h3 style="margin-top:0;">NumberOfMessagesSent vs NumberOfMessagesDeleted</h3>
+                  <p>If sent &gt;&gt; deleted over time, consumers are not keeping up. Scale out or debug consumer throughput.</p>
+                </div>
+              </div>
+            </details>
+          </section>
+
+          <!-- Section 10 -->
+          <section class="section" id="reference-architecture">
+            <details class="section__collapse" open>
+              <summary>
+                <div class="section__heading">
+                  <span class="section__eyebrow">Section 10 · Production</span>
+                  <h2>A production reference architecture</h2>
+                </div>
+                <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+              </summary>
+              <p>A safe default for event-driven workloads: one SNS topic fans out to multiple SQS queues; each queue has a DLQ; encryption at rest and in transit; VPC endpoints; and CloudWatch alarms on depth and age.</p>
+
+              <figure class="figure">
+                <svg viewBox="0 0 720 380" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Production reference architecture" style="max-width:720px;margin:0 auto;">
+                  <defs>
+                    <marker id="arrP" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="var(--color-primary)"/></marker>
+                    <marker id="arrA" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="var(--color-accent)"/></marker>
+                    <marker id="arrD" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L8,3 z" fill="var(--color-danger)"/></marker>
+                  </defs>
+                  <!-- App -->
+                  <rect x="10" y="160" width="110" height="50" rx="8" fill="var(--color-surface-2)" stroke="var(--color-border)" stroke-width="1.5"/>
+                  <text x="65" y="182" text-anchor="middle" font-size="11" fill="var(--color-text)" font-weight="700">App / Service</text>
+                  <text x="65" y="198" text-anchor="middle" font-size="9" fill="var(--color-text-muted)">ECS / Lambda</text>
+                  <!-- Arrow -->
+                  <line x1="120" y1="185" x2="195" y2="185" stroke="var(--color-accent)" stroke-width="2" marker-end="url(#arrA)" class="svg-flow"/>
+                  <!-- SNS -->
+                  <rect x="200" y="155" width="130" height="60" rx="10" fill="color-mix(in srgb,var(--color-accent) 12%,var(--color-surface))" stroke="var(--color-accent)" stroke-width="2"/>
+                  <text x="265" y="181" text-anchor="middle" font-size="12" fill="var(--color-accent)" font-weight="700">SNS Topic</text>
+                  <text x="265" y="196" text-anchor="middle" font-size="9" fill="var(--color-text-muted)">SSE-KMS · filter policies</text>
+                  <text x="265" y="209" text-anchor="middle" font-size="9" fill="var(--color-text-muted)">PrivateLink endpoint</text>
+                  <!-- Fan-out -->
+                  <line x1="330" y1="172" x2="390" y2="100" stroke="var(--color-primary)" stroke-width="1.8" marker-end="url(#arrP)"/>
+                  <line x1="330" y1="185" x2="390" y2="185" stroke="var(--color-primary)" stroke-width="1.8" marker-end="url(#arrP)"/>
+                  <line x1="330" y1="200" x2="390" y2="275" stroke="var(--color-primary)" stroke-width="1.8" marker-end="url(#arrP)"/>
+                  <!-- SQS A -->
+                  <rect x="395" y="78" width="140" height="42" rx="8" fill="color-mix(in srgb,var(--color-primary) 10%,var(--color-surface))" stroke="var(--color-primary)" stroke-width="1.5"/>
+                  <text x="465" y="96" text-anchor="middle" font-size="11" fill="var(--color-text)" font-weight="600">SQS: service-a</text>
+                  <text x="465" y="112" text-anchor="middle" font-size="9" fill="var(--color-text-muted)">SSE-KMS · 14d retention</text>
+                  <!-- DLQ A -->
+                  <line x1="535" y1="99" x2="565" y2="99" stroke="var(--color-danger)" stroke-width="1.5" marker-end="url(#arrD)" stroke-dasharray="3 2"/>
+                  <rect x="570" y="82" width="100" height="34" rx="6" fill="color-mix(in srgb,var(--color-danger) 10%,var(--color-surface))" stroke="var(--color-danger)" stroke-width="1.2"/>
+                  <text x="620" y="104" text-anchor="middle" font-size="10" fill="var(--color-text)" font-weight="600">DLQ-a ⚠</text>
+                  <!-- SQS B -->
+                  <rect x="395" y="163" width="140" height="42" rx="8" fill="color-mix(in srgb,var(--color-primary) 10%,var(--color-surface))" stroke="var(--color-primary)" stroke-width="1.5"/>
+                  <text x="465" y="181" text-anchor="middle" font-size="11" fill="var(--color-text)" font-weight="600">SQS: service-b</text>
+                  <text x="465" y="197" text-anchor="middle" font-size="9" fill="var(--color-text-muted)">SSE-KMS · 14d retention</text>
+                  <!-- DLQ B -->
+                  <line x1="535" y1="184" x2="565" y2="184" stroke="var(--color-danger)" stroke-width="1.5" marker-end="url(#arrD)" stroke-dasharray="3 2"/>
+                  <rect x="570" y="167" width="100" height="34" rx="6" fill="color-mix(in srgb,var(--color-danger) 10%,var(--color-surface))" stroke="var(--color-danger)" stroke-width="1.2"/>
+                  <text x="620" y="189" text-anchor="middle" font-size="10" fill="var(--color-text)" font-weight="600">DLQ-b ⚠</text>
+                  <!-- SQS C -->
+                  <rect x="395" y="253" width="140" height="42" rx="8" fill="color-mix(in srgb,var(--color-primary) 10%,var(--color-surface))" stroke="var(--color-primary)" stroke-width="1.5"/>
+                  <text x="465" y="271" text-anchor="middle" font-size="11" fill="var(--color-text)" font-weight="600">SQS: analytics</text>
+                  <text x="465" y="287" text-anchor="middle" font-size="9" fill="var(--color-text-muted)">SSE-KMS · 14d retention</text>
+                  <!-- DLQ C -->
+                  <line x1="535" y1="274" x2="565" y2="274" stroke="var(--color-danger)" stroke-width="1.5" marker-end="url(#arrD)" stroke-dasharray="3 2"/>
+                  <rect x="570" y="257" width="100" height="34" rx="6" fill="color-mix(in srgb,var(--color-danger) 10%,var(--color-surface))" stroke="var(--color-danger)" stroke-width="1.2"/>
+                  <text x="620" y="279" text-anchor="middle" font-size="10" fill="var(--color-text)" font-weight="600">DLQ-c ⚠</text>
+                  <!-- CloudWatch -->
+                  <rect x="200" y="330" width="240" height="34" rx="8" fill="color-mix(in srgb,var(--color-success) 10%,var(--color-surface))" stroke="var(--color-success)" stroke-width="1.5"/>
+                  <text x="320" y="352" text-anchor="middle" font-size="11" fill="var(--color-text)" font-weight="600">CloudWatch Alarms: depth, age, DLQ &gt; 0</text>
+                  <line x1="320" y1="215" x2="320" y2="330" stroke="var(--color-success)" stroke-width="1.2" stroke-dasharray="4 3"/>
+                </svg>
+                <figcaption>App → SNS → three SQS queues (each with DLQ) + CloudWatch alarms. All traffic via PrivateLink, all queues encrypted with KMS.</figcaption>
+              </figure>
+
+              <h3>Six-point production checklist</h3>
+              <ul class="checklist">
+                <li>Every SQS queue has a DLQ with <code>maxReceiveCount</code> set to 3–5.</li>
+                <li>CloudWatch alarm on DLQ depth &gt; 0 and on source queue age exceeding your SLA.</li>
+                <li>Encryption at rest: SSE-KMS for regulated data, SSE-SQS otherwise.</li>
+                <li>Queue policy enforces <code>aws:SecureTransport: true</code> — no plaintext HTTP.</li>
+                <li>VPC interface endpoints for SQS and SNS — no traffic over public internet.</li>
+                <li>IAM least privilege: separate roles for producers and consumers.</li>
+              </ul>
+            </details>
+          </section>
+
+          <!-- Section 11 -->
+          <section class="section" id="terraform">
+            <details class="section__collapse" open>
+              <summary>
+                <div class="section__heading">
+                  <span class="section__eyebrow">Section 11 · Code</span>
+                  <h2>Terraform: SNS topic + SQS queue + DLQ</h2>
+                </div>
+                <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+              </summary>
+              <p>A complete, production-ready module: one SNS topic, one SQS consumer queue with DLQ, KMS encryption, and a queue policy that allows SNS to publish. Copy and adapt.</p>
+
+              <h4>SNS topic</h4>
+              <div class="code-block"><pre><code>resource "aws_sns_topic" "this" {
+  name              = "${var.name}-events"
+  kms_master_key_id = var.kms_key_id   # SSE-KMS; use "alias/aws/sns" for AWS-managed
+  tags              = var.tags
+}
+
+# Optional: FIFO topic (uncomment for strict ordering)
+# resource "aws_sns_topic" "this" {
+#   name                        = "${var.name}-events.fifo"
+#   fifo_topic                  = true
+#   content_based_deduplication = true
+#   kms_master_key_id           = var.kms_key_id
+#   tags                        = var.tags
+# }</code></pre></div>
+
+              <h4>Dead Letter Queue</h4>
+              <div class="code-block"><pre><code>resource "aws_sqs_queue" "dlq" {
+  name                      = "${var.name}-dlq"
+  kms_master_key_id         = var.kms_key_id
+  message_retention_seconds = 1209600   # 14 days — long enough to investigate
+  tags                      = var.tags
+}
+
+resource "aws_cloudwatch_metric_alarm" "dlq_not_empty" {
+  alarm_name          = "${var.name}-dlq-not-empty"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 1
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  namespace           = "AWS/SQS"
+  period              = 60
+  statistic           = "Sum"
+  threshold           = 0
+  alarm_description   = "Messages in DLQ — processing failures detected"
+  dimensions = { QueueName = aws_sqs_queue.dlq.name }
+  alarm_actions = [var.alarm_sns_topic_arn]
+}</code></pre></div>
+
+              <h4>Main consumer queue</h4>
+              <div class="code-block"><pre><code>resource "aws_sqs_queue" "this" {
+  name                       = "${var.name}-queue"
+  kms_master_key_id          = var.kms_key_id
+  visibility_timeout_seconds = 300   # must be >= your Lambda/ECS task timeout
+  message_retention_seconds  = 1209600
+  receive_wait_time_seconds  = 20    # long polling — reduces empty receives &amp; cost
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.dlq.arn
+    maxReceiveCount     = 5          # move to DLQ after 5 failed attempts
+  })
+  tags = var.tags
+}
+
+# Enforce HTTPS-only access
+resource "aws_sqs_queue_policy" "this" {
+  queue_url = aws_sqs_queue.this.id
+  policy    = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Sid       = "AllowSNS"
+        Effect    = "Allow"
+        Principal = { Service = "sns.amazonaws.com" }
+        Action    = "sqs:SendMessage"
+        Resource  = aws_sqs_queue.this.arn
+        Condition = { ArnEquals = { "aws:SourceArn" = aws_sns_topic.this.arn } }
+      },
+      {
+        Sid       = "DenyInsecure"
+        Effect    = "Deny"
+        Principal = "*"
+        Action    = "sqs:*"
+        Resource  = aws_sqs_queue.this.arn
+        Condition = { Bool = { "aws:SecureTransport" = "false" } }
+      }
+    ]
+  })
+}</code></pre></div>
+
+              <h4>SNS → SQS subscription</h4>
+              <div class="code-block"><pre><code>resource "aws_sns_topic_subscription" "sqs" {
+  topic_arn            = aws_sns_topic.this.arn
+  protocol             = "sqs"
+  endpoint             = aws_sqs_queue.this.arn
+  raw_message_delivery = true   # deliver the raw SNS payload; omit the SNS envelope JSON
+
+  # Optional: filter policy — only deliver messages with matching attributes
+  # filter_policy = jsonencode({ event_type = ["order.placed", "order.updated"] })
+
+  redrive_policy = jsonencode({
+    deadLetterTargetArn = aws_sqs_queue.dlq.arn
+  })
+}</code></pre></div>
+
+              <h4>CloudWatch alarm: queue depth</h4>
+              <div class="code-block"><pre><code>resource "aws_cloudwatch_metric_alarm" "queue_depth" {
+  alarm_name          = "${var.name}-queue-depth"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 3
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  namespace           = "AWS/SQS"
+  period              = 60
+  statistic           = "Maximum"
+  threshold           = var.depth_alarm_threshold   # e.g. 1000
+  alarm_description   = "Queue depth exceeds threshold — consumers may be falling behind"
+  dimensions = { QueueName = aws_sqs_queue.this.name }
+  alarm_actions = [var.alarm_sns_topic_arn]
+}
+
+resource "aws_cloudwatch_metric_alarm" "message_age" {
+  alarm_name          = "${var.name}-oldest-message-age"
+  comparison_operator = "GreaterThanThreshold"
+  evaluation_periods  = 2
+  metric_name         = "ApproximateAgeOfOldestMessage"
+  namespace           = "AWS/SQS"
+  period              = 60
+  statistic           = "Maximum"
+  threshold           = var.age_alarm_seconds   # e.g. 3600 for 1 hour
+  alarm_description   = "Messages sitting too long — consumer throughput issue"
+  dimensions = { QueueName = aws_sqs_queue.this.name }
+  alarm_actions = [var.alarm_sns_topic_arn]
+}</code></pre></div>
+            </details>
+          </section>
+
+          <!-- Section 12 -->
+          <section class="section" id="mental-model">
+            <details class="section__collapse" open>
+              <summary>
+                <div class="section__heading">
+                  <span class="section__eyebrow">Section 12 · One slide to remember</span>
+                  <h2>The four-card mental model</h2>
+                </div>
+                <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+              </summary>
+              <p>If you remember nothing else from this session, remember these four roles. They answer the most common architecture questions.</p>
+              <div class="mental-grid">
+                <div class="mental-card">
+                  <div class="mental-card__emoji">📬</div>
+                  <div class="mental-card__title">SQS Standard</div>
+                  <div class="mental-card__sub">High-throughput task queue. Consumers compete for work. Tolerate duplicates — make consumers idempotent.</div>
+                </div>
+                <div class="mental-card">
+                  <div class="mental-card__emoji">🔢</div>
+                  <div class="mental-card__title">SQS FIFO</div>
+                  <div class="mental-card__sub">Ordered, exactly-once processing within a group. Use for transactions, workflows, and event sourcing.</div>
+                </div>
+                <div class="mental-card">
+                  <div class="mental-card__emoji">📢</div>
+                  <div class="mental-card__title">SNS</div>
+                  <div class="mental-card__sub">Broadcast one event to many subscribers simultaneously. Push model — no polling, no persistence.</div>
+                </div>
+                <div class="mental-card">
+                  <div class="mental-card__emoji">🔀</div>
+                  <div class="mental-card__title">SNS → SQS fan-out</div>
+                  <div class="mental-card__sub">The production default: SNS for fan-out, SQS for buffering + retry + DLQ. Best of both worlds.</div>
+                </div>
+              </div>
+            </details>
+          </section>
+
+          <!-- Section 13 -->
+          <section class="section" id="common-mistakes">
+            <details class="section__collapse" open>
+              <summary>
+                <div class="section__heading">
+                  <span class="section__eyebrow">Section 13 · Pitfalls</span>
+                  <h2>Common mistakes</h2>
+                </div>
+                <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+              </summary>
+              <div class="accordion">
+                <details>
+                  <summary>"We'll set visibility timeout to 30 s because that's the default."</summary>
+                  <div class="accordion__body">
+                    <p>If your consumer takes 60 seconds to process, the message becomes visible again after 30 s — while it's still being processed. Another consumer picks it up, causing a duplicate. Set <code>visibility_timeout_seconds</code> to at least 6× your average processing time, or extend it dynamically using <code>ChangeMessageVisibility</code>.</p>
+                  </div>
+                </details>
+                <details>
+                  <summary>"We don't need a DLQ — our consumer handles errors."</summary>
+                  <div class="accordion__body">
+                    <p>A poison-pill message (bad JSON, unexpected schema, downstream dependency that's permanently broken) will loop forever, exhausting your consumer's threads and blocking other messages. Without a DLQ it retries indefinitely until the 14-day retention expires. Always configure a DLQ with <code>maxReceiveCount</code>.</p>
+                  </div>
+                </details>
+                <details>
+                  <summary>"We publish directly to all 10 SQS queues from the service."</summary>
+                  <div class="accordion__body">
+                    <p>The producer must now know about every consumer — tight coupling through the back door. Adding a new consumer requires a code change in the producer. Use SNS as the single publish target; SNS fans out to all queues. Adding a consumer is a new SNS subscription, invisible to the producer.</p>
+                  </div>
+                </details>
+                <details>
+                  <summary>"FIFO is safer — let's use it everywhere."</summary>
+                  <div class="accordion__body">
+                    <p>FIFO throughput is capped (300–70,000 msg/s vs nearly unlimited for Standard). For high-volume workloads where order doesn't matter (image resize, email send), FIFO is an unnecessary bottleneck. Use FIFO only when ordering or exactly-once matters. Idempotent Standard queues handle the vast majority of use cases.</p>
+                  </div>
+                </details>
+                <details>
+                  <summary>"We use short polling because long polling sounds more complex."</summary>
+                  <div class="accordion__body">
+                    <p>Short polling returns immediately even when the queue is empty, incurring cost per empty response. Long polling (up to 20 s) waits for a message before returning — dramatically reducing empty receives and API costs. Set <code>receive_wait_time_seconds = 20</code> on every queue. There is no meaningful complexity increase.</p>
+                  </div>
+                </details>
+                <details>
+                  <summary>"We store sensitive data (PII, tokens) directly in message bodies."</summary>
+                  <div class="accordion__body">
+                    <p>SQS message bodies appear in CloudWatch Logs, X-Ray traces, and potentially in DLQ payloads inspected by engineers. Store sensitive data in S3 (with server-side encryption) and put only a reference (S3 key) in the message body. This is the "claim-check" pattern and also helps with the 256 KB message size limit.</p>
+                  </div>
+                </details>
+              </div>
+            </details>
+          </section>
+
+          <!-- Section 14 -->
+          <section class="section" id="references">
+            <details class="section__collapse" open>
+              <summary>
+                <div class="section__heading">
+                  <span class="section__eyebrow">Section 14 · Read further</span>
+                  <h2>References &amp; further reading</h2>
+                </div>
+                <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
+              </summary>
+              <ul>
+                <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/welcome.html" rel="noopener" target="_blank">Amazon SQS Developer Guide</a> — canonical documentation covering all queue types, parameters, and API operations.</li>
+                <li><a href="https://docs.aws.amazon.com/sns/latest/dg/welcome.html" rel="noopener" target="_blank">Amazon SNS Developer Guide</a> — topic types, subscription protocols, message filtering, and mobile push.</li>
+                <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-dead-letter-queues.html" rel="noopener" target="_blank">Dead-letter queues</a> — how to configure DLQs, set <code>maxReceiveCount</code>, and redrive messages back to the source queue.</li>
+                <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/FIFO-queues.html" rel="noopener" target="_blank">FIFO queue behaviour</a> — ordering, deduplication windows, message group IDs, and high-throughput mode.</li>
+                <li><a href="https://docs.aws.amazon.com/sns/latest/dg/sns-subscription-filter-policies.html" rel="noopener" target="_blank">SNS message filtering</a> — filter policy syntax and how to attach policies per subscription.</li>
+                <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-security-best-practices.html" rel="noopener" target="_blank">SQS security best practices</a> — IAM, encryption, VPC endpoints, and least-privilege patterns.</li>
+                <li><a href="https://docs.aws.amazon.com/AWSSimpleQueueService/latest/SQSDeveloperGuide/sqs-short-and-long-polling.html" rel="noopener" target="_blank">Long polling</a> — why it reduces cost and latency versus short polling.</li>
+                <li><a href="https://docs.aws.amazon.com/sns/latest/dg/sns-common-scenarios.html" rel="noopener" target="_blank">Common SNS scenarios</a> — fan-out, alerting, push to mobile, and event-driven architectures.</li>
+                <li><a href="https://aws.amazon.com/sqs/pricing/" rel="noopener" target="_blank">SQS pricing</a> — first 1M requests/month free; beyond that, Standard vs FIFO cost breakdown.</li>
+                <li><a href="https://aws.amazon.com/sns/pricing/" rel="noopener" target="_blank">SNS pricing</a> — per-request and per-delivery charges across subscriber types.</li>
+                <li><a href="https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sqs_queue" rel="noopener" target="_blank">Terraform aws_sqs_queue</a> — all arguments for the Terraform resource used in this session.</li>
+                <li><a href="https://registry.terraform.io/providers/hashicorp/aws/latest/docs/resources/sns_topic" rel="noopener" target="_blank">Terraform aws_sns_topic</a> — Terraform resource for SNS topic configuration.</li>
+                <li><a href="https://aws.amazon.com/blogs/compute/building-event-driven-architectures-with-amazon-sns-fifo/" rel="noopener" target="_blank">AWS Blog: Event-driven architectures with SNS FIFO</a> — end-to-end walkthrough of ordered fan-out.</li>
+                <li><a href="https://docs.aws.amazon.com/wellarchitected/latest/reliability-pillar/welcome.html" rel="noopener" target="_blank">AWS Well-Architected — Reliability Pillar</a> — broader resilience guidance that frames async messaging, retry, and circuit-breaker patterns.</li>
+              </ul>
+            </details>
+          </section>
+
+        </div><!-- end sections -->
+      </div><!-- end .session grid -->
+    </div><!-- end .container -->
+  </main>
+
+  <footer class="site-footer">
+    <div class="container site-footer__inner">
+      <span>© <span id="year"></span> Davis KVS — built with vanilla HTML, CSS, and JS.</span>
+      <a href="../../">← Back to all sessions</a>
+    </div>
+  </footer>
+  <script>document.getElementById("year").textContent = new Date().getFullYear();</script>
+</body>
+</html>
