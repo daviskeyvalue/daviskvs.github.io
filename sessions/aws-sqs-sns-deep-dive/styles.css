@@ -68,4 +68,14 @@
 .svg-pulse{animation:pulseStroke 2.4s ease-in-out infinite;}
 @keyframes dashFlow{to{stroke-dashoffset:-40;}}
 .svg-flow{stroke-dasharray:6 6;animation:dashFlow 1.6s linear infinite;}
+/* ── Intro animated comparison diagram ─────────────── */
+.msg-anim-wrap{margin:var(--space-5) 0;padding:var(--space-1);background:none;border:none;box-shadow:none;}
+.msg-anim-panel{border-radius:var(--radius-md);padding:var(--space-3) var(--space-3) var(--space-2);text-align:center;}
+.msg-anim-panel--sync{background:color-mix(in srgb,var(--color-danger) 6%,var(--color-surface));border:1px solid color-mix(in srgb,var(--color-danger) 22%,var(--color-border));}
+.msg-anim-panel--async{background:color-mix(in srgb,var(--color-success) 6%,var(--color-surface));border:1px solid color-mix(in srgb,var(--color-success) 22%,var(--color-border));}
+.msg-anim-panel__label{font-size:.78rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;margin:0 0 var(--space-2);}
+.msg-anim-panel--sync .msg-anim-panel__label{color:var(--color-danger);}
+.msg-anim-panel--async .msg-anim-panel__label{color:var(--color-success);}
+@keyframes blinkText{0%,100%{opacity:.4;}50%{opacity:1;}}
+.blink-anim{animation:blinkText 1.4s ease-in-out infinite;}
 @media print{.section-controls{display:none;}.section__collapse>summary .section__chevron{display:none;}.section__collapse>summary{cursor:default;padding-bottom:0;}}
