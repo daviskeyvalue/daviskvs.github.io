@@ -20,6 +20,12 @@
 .section+.section{border-top:1px solid var(--color-border);}
 .section__eyebrow{display:inline-block;font-size:.75rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--color-primary);margin-bottom:var(--space-2);}
 .section h2{margin-bottom:var(--space-4);}
+/* Presentation spacing: clearly separate subsections within a section */
+.section__collapse>h3{margin-top:var(--space-7);}
+.section__collapse>h4{margin-top:var(--space-6);}
+.section__collapse>ul,.section__collapse>ol{margin:0 0 var(--space-5);padding-left:1.4rem;}
+.section__collapse>ul>li,.section__collapse>ol>li{margin-bottom:var(--space-2);}
+.section__collapse>ul>li:last-child,.section__collapse>ol>li:last-child{margin-bottom:0;}
 .section-controls{display:flex;gap:var(--space-2);flex-wrap:wrap;margin:var(--space-4) 0 0;}
 .section-controls__btn{font:inherit;font-size:.85rem;font-weight:600;padding:.4rem .85rem;border-radius:6px;background:var(--color-surface);color:var(--color-text);border:1px solid var(--color-border);cursor:pointer;}
 .section-controls__btn:hover{background:var(--color-surface-2);border-color:var(--color-primary);color:var(--color-primary);}

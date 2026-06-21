@@ -46,7 +46,12 @@
         <span class="tag">Messaging</span>
         &nbsp;·&nbsp; Intermediate &nbsp;·&nbsp; ~30 min &nbsp;·&nbsp; Updated 2026-06-21
       </div>
-      <p>New to message queues? Start here. This is a plain-English guide to two AWS services that let the different parts of an app talk to each other <em>without waiting on one another</em>: <strong>Amazon SQS</strong> (a queue that holds work until someone is ready for it) and <strong>Amazon SNS</strong> (a broadcaster that sends one message to many listeners at once). We begin with a simple analogy, then build up to real patterns, reliability, security, and a production reference architecture.</p>
+      <p>This session covers two AWS services that let the parts of an app talk to each other <em>without waiting on one another</em>:</p>
+      <ul>
+        <li><strong>Amazon SQS</strong> — a queue that holds work until a worker is ready for it.</li>
+        <li><strong>Amazon SNS</strong> — a broadcaster that sends one message to many listeners at once.</li>
+      </ul>
+      <p>We start with a simple analogy, then build up to real patterns, reliability, scaling, and security.</p>
     </div>
 
     <div class="container">
@@ -91,7 +96,12 @@
                 </div>
                 <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
               </summary>
-              <p>Most apps start simple: one service calls another and waits for the answer. That's a <strong>synchronous</strong> call — like phoning a coworker and staying on the line until they finish. It works fine until things get busy or one piece breaks: a slow service makes everyone who calls it wait, a crashed service drags down everything that depends on it, and a traffic spike on one part forces you to scale all the parts around it.</p>
+              <p>Most apps start simple: one service calls another and waits for the answer — a <strong>synchronous</strong> call, like phoning a coworker and staying on the line until they finish. That works until things get busy or one piece breaks:</p>
+              <ul>
+                <li>A <strong>slow</strong> service makes everyone who calls it wait.</li>
+                <li>A <strong>crashed</strong> service drags down everything that depends on it.</li>
+                <li>A <strong>traffic spike</strong> on one part forces you to scale all the parts around it.</li>
+              </ul>
 
               <!-- ── Animated comparison diagram ── -->
               <figure class="figure msg-anim-wrap">
@@ -161,7 +171,12 @@
                 <p class="callout__title">A quick analogy: ordering coffee ☕</p>
                 <p>Picture a busy café. If every customer had to stand at the counter until their drink was ready before the next order could be taken, the line would grind to a halt. Instead, you order, get a ticket, and step aside — and the barista works through the tickets at their own pace. A <strong>message queue</strong> is that ticket system for software: the sender drops off the work and moves on, and a worker picks it up when it's free.</p>
               </div>
-              <p>Amazon SQS and SNS bring this idea to AWS. They sit between your services so a sender never has to wait for a receiver. If a receiver is slow, busy, or briefly down, the message simply waits safely until it can be handled. The sender (the <strong>producer</strong>) and the receiver (the <strong>consumer</strong>) now run on their own schedules and can fail without taking each other down.</p>
+              <p>Amazon SQS and SNS bring this idea to AWS — they sit between your services so a sender never waits on a receiver:</p>
+              <ul>
+                <li>If a receiver is slow, busy, or briefly down, the message <strong>waits safely</strong> until it can be handled.</li>
+                <li>The sender (the <strong>producer</strong>) and receiver (the <strong>consumer</strong>) run on their own schedules.</li>
+                <li>Either side can fail <strong>without taking the other down</strong>.</li>
+              </ul>
               <p>Here's what that buys you in practice:</p>
               <div class="table-wrap">
                 <table class="data">
@@ -192,10 +207,15 @@
                 </div>
                 <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
               </summary>
-              <p>Amazon SQS is a <strong>pull-based</strong>, fully managed message queue — and the <strong>oldest service on AWS</strong> (over a decade old, so its behaviour is rock-solid and well understood). Producers send messages to a queue URL with the <code>SendMessage</code> API; consumers poll the queue using <code>ReceiveMessage</code>, process the message, and delete it. AWS manages replication, scaling, and durability behind the scenes.</p>
+              <p>Amazon SQS is a <strong>pull-based</strong>, fully managed message queue — and the <strong>oldest service on AWS</strong>, so its behaviour is rock-solid and well understood. In short:</p>
+              <ul>
+                <li><strong>Producers</strong> send messages to a queue URL with the <code>SendMessage</code> API.</li>
+                <li><strong>Consumers</strong> poll the queue with <code>ReceiveMessage</code>, process the message, then delete it.</li>
+                <li>AWS handles replication, scaling, and durability behind the scenes.</li>
+              </ul>
               <div class="callout">
-                <p class="callout__title">Exam cue: "decoupling" → think SQS</p>
-                <p>SQS exists to <strong>decouple applications</strong>. Any time you see "application decoupling," a sudden load spike, timeouts, or "make sure no requests are lost," SQS is almost always the answer.</p>
+                <p class="callout__title">Key idea: decoupling</p>
+                <p>SQS exists to <strong>decouple applications</strong>. Reach for a queue whenever you need to absorb a sudden load spike, avoid timeouts, or make sure no request is lost when a downstream service is busy.</p>
               </div>
 
               <h3>What makes SQS special</h3>
@@ -218,7 +238,7 @@
                 </div>
               </div>
 
-              <p>Before going deeper, it helps to know the handful of settings that define how a queue behaves. Each one is a knob you tune per queue; the table below lists them, and the breakdown that follows explains what each really means and how to choose a value.</p>
+              <p>A handful of per-queue settings define how a queue behaves. The table below lists them; the breakdown that follows explains each one and how to choose a value.</p>
 
               <figure class="figure">
                 <svg viewBox="0 0 700 220" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SQS architecture diagram" style="max-width:700px;margin:0 auto;">
@@ -308,8 +328,18 @@
               </div>
 
               <h3 id="consumers">Consumers — who reads the queue, and how</h3>
-              <p>A queue is only half the story. A <strong>consumer</strong> is any process that <em>reads</em> messages from the queue, does the work they describe, and then deletes them. Producers don't know or care who the consumers are; they simply drop messages in. This is what makes the two sides independent — you can change, scale, or restart consumers without touching the producers at all.</p>
-              <p>What can be a consumer? Anything that can call the SQS API: an <strong>AWS Lambda function</strong> (the most common choice — Lambda polls the queue for you via an event source mapping), a container or process running on <strong>ECS / EKS / EC2</strong>, or even a script on a server. AWS does not push messages to consumers; consumers <strong>pull</strong> them.</p>
+              <p>A queue is only half the story. A <strong>consumer</strong> is any process that reads messages, does the work they describe, then deletes them:</p>
+              <ul>
+                <li>Producers don't know or care who the consumers are — they just drop messages in.</li>
+                <li>That independence lets you change, scale, or restart consumers without touching producers.</li>
+                <li>Consumers <strong>pull</strong> messages; AWS never pushes them.</li>
+              </ul>
+              <p>Anything that can call the SQS API can be a consumer:</p>
+              <ul>
+                <li><strong>AWS Lambda</strong> — the most common choice; Lambda polls the queue for you via an event source mapping.</li>
+                <li>A container or process on <strong>ECS / EKS / EC2</strong>.</li>
+                <li>Even a plain script running on a server.</li>
+              </ul>
 
               <h4>The receive → process → delete cycle</h4>
               <p>Every consumer follows the same three-step loop, and understanding it is the key to using SQS correctly:</p>
@@ -324,8 +354,13 @@
               </div>
 
               <h4>Competing consumers — scaling out</h4>
-              <p>You can run <strong>many identical consumers against the same queue</strong>. SQS hands each message to whichever consumer asks for it next, so the queue automatically spreads load across all of them — this is the <strong>competing consumers</strong> pattern. Need to clear a backlog faster? Add more consumers. Traffic quiet? Scale them down to zero. Because each message goes to exactly one consumer, the work is divided, not duplicated, and you get horizontal scaling for free.</p>
-              <p>A natural pairing is <strong>auto-scaling on queue depth</strong>: watch the <code>ApproximateNumberOfMessagesVisible</code> metric and add consumers when the backlog grows, remove them when it drains. (Section 9 covers exactly which metrics to alarm on.)</p>
+              <p>You can run <strong>many identical consumers against one queue</strong> — the <strong>competing consumers</strong> pattern:</p>
+              <ul>
+                <li>SQS hands each message to whichever consumer asks next, spreading load automatically.</li>
+                <li>Each message goes to <strong>exactly one</strong> consumer — work is divided, not duplicated.</li>
+                <li>Add consumers to clear a backlog faster; scale to zero when traffic is quiet.</li>
+                <li>Pair with <strong>auto-scaling on queue depth</strong> (<code>ApproximateNumberOfMessagesVisible</code>) — see Section 9.</li>
+              </ul>
 
               <h4>What happens when a consumer keeps failing?</h4>
               <p>If a message can't be processed — bad data, a downstream bug — the consumer won't delete it, so it returns to the queue and is retried. To stop a "poison" message from looping forever, attach a <strong>Dead Letter Queue (DLQ)</strong>: after a set number of failed attempts (<code>maxReceiveCount</code>), SQS moves the message to the DLQ so the rest of the queue keeps flowing and you can inspect the failure later. Section 7 covers the lifecycle and DLQs in depth.</p>
@@ -412,7 +447,12 @@
                 </div>
                 <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
               </summary>
-              <p>Amazon SNS is a <strong>push-based</strong>, fully managed pub/sub service. A publisher sends one message to an SNS topic; SNS immediately pushes copies of that message to all configured subscribers. No polling required.</p>
+              <p>Amazon SNS is a <strong>push-based</strong>, fully managed pub/sub service:</p>
+              <ul>
+                <li>A publisher sends <strong>one</strong> message to an SNS <strong>topic</strong>.</li>
+                <li>SNS immediately pushes <strong>copies</strong> to every configured subscriber.</li>
+                <li>No polling required — delivery is push, not pull.</li>
+              </ul>
 
               <figure class="figure">
                 <svg viewBox="0 0 700 280" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="SNS fan-out diagram" style="max-width:700px;margin:0 auto;">
@@ -478,7 +518,13 @@
               </ul>
 
               <h3>SNS receives from many AWS services</h3>
-              <p>Many AWS services publish to SNS out of the box, which makes it a natural notification hub: <strong>CloudWatch alarms</strong>, <strong>Auto Scaling</strong> lifecycle events, <strong>Amazon S3</strong> bucket events, <strong>RDS</strong> events, <strong>AWS Budgets</strong>, <strong>Lambda</strong>, <strong>DynamoDB</strong>, and <strong>CloudFormation</strong> — among others.</p>
+              <p>Many AWS services publish to SNS out of the box, making it a natural notification hub:</p>
+              <ul>
+                <li><strong>CloudWatch</strong> alarms</li>
+                <li><strong>Auto Scaling</strong> lifecycle events</li>
+                <li><strong>Amazon S3</strong> bucket events and <strong>RDS</strong> events</li>
+                <li><strong>AWS Budgets</strong>, <strong>Lambda</strong>, <strong>DynamoDB</strong>, and <strong>CloudFormation</strong></li>
+              </ul>
 
               <div class="callout">
                 <p class="callout__title">Scale &amp; limits</p>
@@ -527,7 +573,13 @@
                 </div>
                 <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
               </summary>
-              <p>Fan-out decouples the event producer from every downstream consumer. When an order is placed, the "Orders" service publishes one event to SNS. SNS simultaneously delivers it to: an inventory queue, a shipping queue, an analytics queue, and an email service — each evolving independently.</p>
+              <p>Fan-out decouples the event producer from every downstream consumer. When an order is placed, the "Orders" service publishes <strong>one</strong> event to SNS, and SNS delivers it simultaneously to several independent destinations:</p>
+              <ul>
+                <li>an <strong>inventory</strong> queue</li>
+                <li>a <strong>shipping</strong> queue</li>
+                <li>an <strong>analytics</strong> queue</li>
+                <li>an <strong>email</strong> service</li>
+              </ul>
 
               <figure class="figure">
                 <svg viewBox="0 0 720 320" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Fan-out pattern diagram" style="max-width:720px;margin:0 auto;">
