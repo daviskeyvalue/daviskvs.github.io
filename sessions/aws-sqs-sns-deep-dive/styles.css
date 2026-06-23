@@ -36,6 +36,8 @@ main>.container>ul>li{margin-bottom:var(--space-2);line-height:1.7;}
 .section__collapse .figure{margin:var(--space-6) 0;}
 .section__collapse .table-wrap{margin:var(--space-6) 0;}
 .section__collapse .grid-2,.section__collapse .grid-3{margin:var(--space-6) 0;}
+/* Security section: cards size to content, no empty-space stretching */
+#security .grid-2{align-items:start;}
 .section-controls{display:flex;gap:var(--space-2);flex-wrap:wrap;margin:var(--space-4) 0 0;}
 .section-controls__btn{font:inherit;font-size:.85rem;font-weight:600;padding:.4rem .85rem;border-radius:6px;background:var(--color-surface);color:var(--color-text);border:1px solid var(--color-border);cursor:pointer;}
 .section-controls__btn:hover{background:var(--color-surface-2);border-color:var(--color-primary);color:var(--color-primary);}
