@@ -864,20 +864,6 @@
                     <li><strong>At rest (SSE-KMS):</strong> Customer-managed key. Required for regulatory environments. Adds per-request KMS charges; consider batching.</li>
                   </ul>
                 </div>
-                <div class="card">
-                  <h3>VPC endpoints (PrivateLink)</h3>
-                  <p>Create an interface VPC endpoint for SQS and SNS. Traffic from your VPC stays on the AWS backbone — it never touches the public internet. Combine with an endpoint policy to restrict which queues/topics can be accessed.</p>
-                </div>
-                <div class="card">
-                  <h3>Least-privilege checklist</h3>
-                  <ul class="checklist">
-                    <li>Producers: <code>sqs:SendMessage</code> only</li>
-                    <li>Consumers: <code>sqs:ReceiveMessage</code>, <code>sqs:DeleteMessage</code>, <code>sqs:GetQueueAttributes</code> only</li>
-                    <li>SNS publish: <code>sns:Publish</code> scoped to specific topic ARN</li>
-                    <li>SQS queue policy: allow SNS service principal to <code>SendMessage</code></li>
-                    <li>Never use <code>*</code> as principal in a resource policy on production queues</li>
-                  </ul>
-                </div>
               </div>
             </details>
           </section>
@@ -1038,57 +1024,6 @@
                   <div class="mental-card__title">SNS → SQS fan-out</div>
                   <div class="mental-card__sub">The production default: SNS for fan-out, SQS for buffering + retry + DLQ. Best of both worlds.</div>
                 </div>
-              </div>
-            </details>
-          </section>
-
-          <!-- Section 14 -->
-          <section class="section" id="common-mistakes">
-            <details class="section__collapse" open>
-              <summary>
-                <div class="section__heading">
-                  <span class="section__eyebrow">Section 14 · Pitfalls</span>
-                  <h2>Common mistakes</h2>
-                </div>
-                <svg class="section__chevron" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><polyline points="9 18 15 12 9 6"/></svg>
-              </summary>
-              <div class="accordion">
-                <details>
-                  <summary>"We'll set visibility timeout to 30 s because that's the default."</summary>
-                  <div class="accordion__body">
-                    <p>If your consumer takes 60 seconds to process, the message becomes visible again after 30 s — while it's still being processed. Another consumer picks it up, causing a duplicate. Set <code>visibility_timeout_seconds</code> to at least 6× your average processing time, or extend it dynamically using <code>ChangeMessageVisibility</code>.</p>
-                  </div>
-                </details>
-                <details>
-                  <summary>"We don't need a DLQ — our consumer handles errors."</summary>
-                  <div class="accordion__body">
-                    <p>A poison-pill message (bad JSON, unexpected schema, downstream dependency that's permanently broken) will loop forever, exhausting your consumer's threads and blocking other messages. Without a DLQ it retries indefinitely until the 14-day retention expires. Always configure a DLQ with <code>maxReceiveCount</code>.</p>
-                  </div>
-                </details>
-                <details>
-                  <summary>"We publish directly to all 10 SQS queues from the service."</summary>
-                  <div class="accordion__body">
-                    <p>The producer must now know about every consumer — tight coupling through the back door. Adding a new consumer requires a code change in the producer. Use SNS as the single publish target; SNS fans out to all queues. Adding a consumer is a new SNS subscription, invisible to the producer.</p>
-                  </div>
-                </details>
-                <details>
-                  <summary>"FIFO is safer — let's use it everywhere."</summary>
-                  <div class="accordion__body">
-                    <p>FIFO throughput is capped (300–70,000 msg/s vs nearly unlimited for Standard). For high-volume workloads where order doesn't matter (image resize, email send), FIFO is an unnecessary bottleneck. Use FIFO only when ordering or exactly-once matters. Idempotent Standard queues handle the vast majority of use cases.</p>
-                  </div>
-                </details>
-                <details>
-                  <summary>"We use short polling because long polling sounds more complex."</summary>
-                  <div class="accordion__body">
-                    <p>Short polling returns immediately even when the queue is empty, incurring cost per empty response. Long polling (up to 20 s) waits for a message before returning — dramatically reducing empty receives and API costs. Set <code>receive_wait_time_seconds = 20</code> on every queue. There is no meaningful complexity increase.</p>
-                  </div>
-                </details>
-                <details>
-                  <summary>"We store sensitive data (PII, tokens) directly in message bodies."</summary>
-                  <div class="accordion__body">
-                    <p>SQS message bodies appear in CloudWatch Logs, X-Ray traces, and potentially in DLQ payloads inspected by engineers. Store sensitive data in S3 (with server-side encryption) and put only a reference (S3 key) in the message body. This is the "claim-check" pattern and also helps with the 256 KB message size limit.</p>
-                  </div>
-                </details>
               </div>
             </details>
           </section>
